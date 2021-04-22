@@ -11,6 +11,7 @@ v999 (April XX, 2021)
 **UI changes**
 
 * Prompt user for which portfolio to start project in if portfolio value not previously set before visiting project templates. Enables users to start a project from a blank link.
+* Rearrange Create | Import | Manage component buttons; put "Manage Import Records" button last.
 
 **Bug fixes**
 
@@ -27,7 +28,6 @@ v999 (April XX, 2021)
 **Install changes**
 
 * Replace me
-
 
 v0.9.3.4 (April 20, 2021)
 -------------------------
