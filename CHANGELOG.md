@@ -10,7 +10,7 @@ v999 (April XX, 2021)
 
 **UI changes**
 
-* Replace me
+* Prompt user for which portfolio to start project in if portfolio value not previously set before visiting project templates. Enables users to start a project from a blank link.
 
 **Bug fixes**
 
@@ -44,7 +44,6 @@ v0.9.3.4 (April 20, 2021)
 **UI changes**
 
 * Link mini-dashboards on project page to sensible related pages.
-
 
 v0.9.3.3 (April 13, 2021)
 -------------------------
