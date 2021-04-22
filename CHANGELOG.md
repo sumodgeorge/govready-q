@@ -11,6 +11,7 @@ v999 (April XX, 2021)
 **UI changes**
 
 * Prompt user for which portfolio to start project in if portfolio value not previously set before visiting project templates. Enables users to start a project from a blank link.
+* Add links for "forgot password" and "change password".
 
 **Bug fixes**
 
@@ -40,6 +41,8 @@ v0.9.3.4 (April 20, 2021)
 **Bug fixes**
 
 * Fixed some issues in code resulting in excessive SQL calls slowing down the application
+
+**UI changes**
 
 **UI changes**
 
