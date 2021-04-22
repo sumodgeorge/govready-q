@@ -24,6 +24,7 @@ v999 (April XX, 2021)
 **Bug fixes**
 
 * Properly filter system POA&M stat to only count POA&Ms for system.
+* Provide better error reporting on import component schema validation; report actual validation error to standout.
 
 **Data changes**
 
