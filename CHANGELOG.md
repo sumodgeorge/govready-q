@@ -48,6 +48,7 @@ v0.9.3.4 (April 20, 2021)
 
 * Link mini-dashboards on project page to sensible related pages.
 * Display system impact level on project page.
+* Add links for "forgot password" and "change password."
 
 **Data changes**
 
