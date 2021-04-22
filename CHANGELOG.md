@@ -47,6 +47,11 @@ v0.9.3.4 (April 20, 2021)
 **UI changes**
 
 * Link mini-dashboards on project page to sensible related pages.
+* Display system impact level on project page.
+
+**Data changes**
+
+* Use statement type `fisma_impact_level` to track impact level of a system.
 
 v0.9.3.3 (April 13, 2021)
 -------------------------
