@@ -723,26 +723,28 @@ def start_app(appver, organization, user, folder, task, q, portfolio):
 
         # Assign default control catalog and control profile
         # Use from App catalog settings
-        try:
-            # Get default catalog key
-            parameters = project.root_task.module.app.catalog_metadata['parameters']
-            catalog_key = [p for p in parameters if p['id'] == 'catalog_key'][0]['value']
-            # Get default profile/baseline
-            baseline_name = [p for p in parameters if p['id'] == 'baseline'][0]['value']
-            # Assign profile/baseline
-            assign_results = system.root_element.assign_baseline_controls(user, catalog_key, baseline_name)
-            # Log result if successful
-            if assign_results:
-                # Log start app / new project
-                logger.info(
-                    event="assign_baseline",
-                    object={"object": "system", "id": system.root_element.id, "title": system.root_element.name},
-                    baseline={"catalog_key": catalog_key, "baseline_name": baseline_name},
-                    user={"id": user.id, "username": user.username}
-                )
-        except:
-            # TODO catch error and return error message
-            print("[INFO] App could not assign catalog_key or profile/baseline.\n")
+        if project.root_task.module.app.catalog_metadata['parameters']:
+            try:
+                # Get default catalog key
+                parameters = project.root_task.module.app.catalog_metadata['parameters']
+                catalog_key = [p for p in parameters if p['id'] == 'catalog_key'][0]['value']
+                # Get default profile/baseline
+                baseline_name = [p for p in parameters if p['id'] == 'baseline'][0]['value']
+                if baseline_name:
+                    # Assign profile/baseline
+                    assign_results = system.root_element.assign_baseline_controls(user, catalog_key, baseline_name)
+                    # Log result if successful
+                    if assign_results:
+                        # Log start app / new project
+                        logger.info(
+                            event="assign_baseline",
+                            object={"object": "system", "id": system.root_element.id, "title": system.root_element.name},
+                            baseline={"catalog_key": catalog_key, "baseline_name": baseline_name},
+                            user={"id": user.id, "username": user.username}
+                        )
+            except:
+                # TODO catch error and return error message
+                print("[INFO] App could not assign catalog_key or profile/baseline.\n")
 
         # Assign default organization components for a system
         if user.has_perm('change_system', system):
@@ -968,13 +970,13 @@ def project(request, project):
 
     # Fetch statement defining FISMA impact level if set
     impact_level_smts = project.system.root_element.statements_consumed.filter(
-        statement_type=StatementTypeEnum.FISMA_IMPACT_LEVEL.value)
+        statement_type=StatementTypeEnum.FISMA_IMPACT_LEVEL.name)
     if len(impact_level_smts) > 0:
         impact_level = impact_level_smts.first().body
     else:
         impact_level = None
 
-    security_objective_smt = project.system.root_element.statements_consumed.filter(statement_type=StatementTypeEnum.SECURITY_IMPACT_LEVEL.value)
+    security_objective_smt = project.system.root_element.statements_consumed.filter(statement_type=StatementTypeEnum.SECURITY_IMPACT_LEVEL.name)
     if security_objective_smt.exists():
         security_body = project.system.get_security_impact_level
         confidentiality, integrity, availability = security_body.get('security_objective_confidentiality',
