@@ -207,11 +207,13 @@
                                         </div>
                                       </div>
                                       <div>
-                                      <div class="col-xs-6 col-sm-6 col-md-6 col-lg-6 col-xl-6 statement-text-block">{% if smt.pid is not None and smt.pid != "" %}<div class="panel-heading-smt">{{ smt.pid }}.</div>{% endif %}{{ smt.body }}</div>
+                                      <div class="col-xs-6 col-sm-6 col-md-6 col-lg-6 col-xl-6 statement-text-block">{% if smt.pid is not None and smt.pid != "" %}<div class="panel-heading-smt">{{ smt.pid }}.</div>{% endif %}{% if smt.delegate %}{{ smt.delegate.body }}<br />(via {{ smt.delegate.sid|upper }}){% else %}{{ smt.body }}{% endif %}</div>
                                       <div class="col-xs-3 col-sm-3 col-md-3 col-lg-3 col-xl-3 remark-text-block">
                                         {% spaceless %}
                                         <span>Status: {% if smt.status != "" and smt.status is not None %}{{ smt.status }}{% else %}TBD{% endif %}</span>
+                                        {% if not smt.delegate %}
                                         <span class="pull-right"><a role="button" class="glyphicon glyphicon-pencil" style="color: #aaa;"  data-toggle="collapse" data-parent="#accordion" href="#document-{{ forloop.counter }}-body" aria-expanded="false" aria-controls="document-{{ forloop.counter }}-body"></a></span>
+                                        {% endif %}
                                           {% if smt.prototype_synched == 'not_synched' %}
                                             <div id="diff_alert_{{ forloop.counter }}_notice">
                                               <span href="#diff_{{ forloop.counter }}" class="" style="text-decoration: none;font-weight: normal; font-size: 9pt; color: firebrick;cursor: pointer;" onclick="alert('Your statement and component\'s certified statement have diverged.\n\nEdit statement for details.');return false;"><span class="glyphicon glyphicon-alert"></span> Differs from certified</span>
