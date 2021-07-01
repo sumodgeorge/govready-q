@@ -242,6 +242,27 @@ class Catalog(object):
             return None
         return prop['value']
 
+    def get_control_part_by_name(self, control, part_name):
+        """Return value of a part of a control by name of part"""
+        part = self.find_dict_by_value(control['parts'], "name", part_name)
+        return part
+
+    def get_control_guidance_links(self, control):
+        """Return the links in the guidance section of a control"""
+        guidance = self.get_control_part_by_name(control, "guidance")
+        if "links" in guidance:
+            return guidance["links"]
+        else:
+            return None
+
+    # In [20]: [l['href'].split("/")[3] for l in c.get_control_by_id('au.2.041')['parts'][0]['links'] if 'NIST_SP_800-53_Rev_4' in l['href'] ]
+    # Out[20]: ['AU-2', 'AU-3', 'AU-3(1)', 'AU-6', 'AU-11', 'AU-12']
+    # In [1]: from controls.oscal import *
+    # In [2]: c = Catalog('CMMC_ver1')
+    # c.get_control_by_id('au.2.041')
+
+
+
     def get_control_parameter_label_by_id(self, control, param_id):
         """Return value of a parameter of a control by id of parameter"""
         param = self.find_dict_by_value(control['parameters'], "id", param_id)
