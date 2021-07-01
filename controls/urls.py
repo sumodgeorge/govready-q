@@ -2,6 +2,10 @@ from django.conf.urls import include, url
 
 from django.contrib import admin
 from django.conf import settings
+
+from controls.models import Element
+from siteapp.model_mixins.tags import TagView, build_tag_urls
+
 admin.autodiscover()
 
 from django.views.decorators.csrf import csrf_exempt
@@ -24,12 +28,16 @@ urlpatterns = [
     # Systems
     url(r'^(?P<system_id>.*)/controls/selected/export/xacta/xlsx$', views.controls_selected_export_xacta_xslx, name="controls_selected"),
     url(r'^(?P<system_id>.*)/controls/selected$', views.controls_selected, name="controls_selected"),
+    url(r'^(?P<system_id>.*)/controls/add$', views.system_controls_add, name="system_controls_add"),
+    url(r'^(?P<system_id>.*)/controls/remove/(?P<element_control_id>.*)$',  views.system_control_remove, name="system_control_remove"),
     url(r'^(?P<system_id>.*)/controls/catalogs/(?P<catalog_key>.*)/control/(?P<cl_id>.*)/compare$', views.editor_compare, name="control_compare"),
     url(r'^(?P<system_id>.*)/controls/catalogs/(?P<catalog_key>.*)/control/(?P<cl_id>.*)$', views.editor, name="control_editor"),
     url(r'^editor_autocomplete/', views.EditorAutocomplete.as_view(), name="search_system_component"),
     url(r'^related_system_components/', views.RelatedComponentStatements.as_view(), name="related_system_components"),
     url(r'^(?P<system_id>.*)/components/add_system_component$', views.add_system_component, name="add_system_component"),
     url(r'^(?P<system_id>.*)/components/editor_autocomplete$',  views.EditorAutocomplete.as_view(), name="editor_autocomplete"),
+    url(r'^(?P<system_id>.*)/component/(?P<element_id>.*)/edit_component_state$',  views.edit_component_state, name="edit_component_state"),
+    url(r'^(?P<system_id>.*)/component/(?P<element_id>.*)/edit_component_type$',  views.edit_component_type, name="edit_component_type"),
     url(r'^(?P<system_id>.)/profile/oscal/json', views.system_profile_oscal_json, name="profile_oscal_json"),
     url(r'^statement_history/(?P<smt_id>.*)/$', views.statement_history, name="statement_history"),
     url(r'^restore_to/(?P<smt_id>.*)/(?P<history_id>.*)/$', views.restore_to_history, name="restore_to"),
@@ -47,7 +55,6 @@ urlpatterns = [
     url(r'^(?P<system_id>.*)/deployment/(?P<deployment_id>.*)/edit$', views.manage_system_deployment, name="manage_system_deployment"),
     url(r'^(?P<system_id>.*)/deployment/(?P<deployment_id>.*)/inventory$', views.system_deployment_inventory, name="system_deployment_inventory"),
     url(r'^(?P<system_id>.*)/deployment/(?P<deployment_id>.*)/history$', views.deployment_history, name="deployment_history"),
-    # url(r'^restore_to/(?P<smt_id>.*)/(?P<history_id>.*)/$', views.restore_to_history, name="restore_to"),
 
     # Statements
     url(r'^smt/_save/$', views.save_smt),
@@ -60,11 +67,13 @@ urlpatterns = [
     url(r'^(?P<system_id>.*)/component/(?P<element_id>.*)/download/oscal/json$',
         views.system_element_download_oscal_json,
         name="system_element_download_oscal_json"),
+    url(r'^(?P<system_id>.*)/component/(?P<element_id>.*)/_remove$', views.system_element_remove, name="system_element_remove"),
     url(r'^(?P<system_id>.*)/component/(?P<element_id>.*)$', views.system_element, name="system_element"),
     url(r'^(?P<system_id>.*)/controls/updated$', views.controls_updated, name="controls_updated"),
 
     # Component Library
     url(r'^components$', views.component_library, name="component_library"),
+    url(r'^components/compare$', views.compare_components, name="compare_components"),
     url(r'^components/new$', views.new_element, name="new_element"),
     url(r'^components/(?P<element_id>.*)/_copy$', views.component_library_component_copy, name="component_library_component_copy"),
     url(r'^components/(?P<element_id>.*)$', views.component_library_component, name="component_library_component"),
@@ -75,7 +84,8 @@ urlpatterns = [
     url(r'^import_records/(?P<import_record_id>.*)/delete$', views.import_record_delete, name="import_record_delete"),
 
     # Elements
-    url(r'^elements/(\d+)/__rename$', views.rename_element, name="rename_element"),
+    url(r'^elements/(\d+)/__edit$', views.edit_element, name="edit_element"),
+    *build_tag_urls(r"^elements/(\d+)/", model=Element),  # Tag Urls
 
     # Controls
     url(r'^catalogs/(?P<catalog_key>.*)/group/(?P<g_id>.*)', views.group, name="control_group"),

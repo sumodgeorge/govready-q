@@ -7,11 +7,14 @@ from uuid import uuid4
 import rtyaml
 import shutil
 import operator
+from natsort import natsorted
+from django.db.models import Q
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.messages.views import SuccessMessageMixin
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ObjectDoesNotExist
+from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
 from django.core.serializers.json import DjangoJSONEncoder
 from django.db import IntegrityError
 from django.db.models.functions import Lower
@@ -21,16 +24,18 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils.text import slugify
 from django.views import View
 from django.views.generic import ListView
+from django.urls import reverse
 from jsonschema import validate
 from jsonschema.exceptions import SchemaError, ValidationError as SchemaValidationError
 from urllib.parse import quote
 from guidedmodules.models import Task, Module, AppVersion, AppSource
-from siteapp.forms import ProjectForm
-from siteapp.models import Project
+from siteapp.model_mixins.tags import TagView
+from siteapp.models import Project, Tag
 from system_settings.models import SystemSettings
-# from .forms import ImportOSCALComponentForm
-# from .forms import StatementPoamForm, PoamForm, ElementForm, DeploymentForm
-from .forms import *
+from .forms import ImportOSCALComponentForm, SystemAssessmentResultForm
+from .forms import StatementPoamForm, PoamForm, ElementForm, DeploymentForm
+from .forms import ElementEditForm
+from siteapp.forms import PortfolioForm
 from .models import *
 from .utilities import *
 from simple_history.utils import update_change_reason
@@ -42,6 +47,7 @@ from structlog.stdlib import LoggerFactory
 structlog.configure(logger_factory=LoggerFactory())
 structlog.configure(processors=[structlog.processors.JSONRenderer()])
 logger = get_logger()
+
 
 def index(request):
     """Index page for controls"""
@@ -63,7 +69,6 @@ def catalogs(request):
 
     context = {
         "catalogs": Catalogs(),
-        "project_form": ProjectForm(request.user),
     }
     return render(request, "controls/index-catalogs.html", context)
 
@@ -85,7 +90,6 @@ def catalog(request, catalog_key, system_id=None):
         "common_controls": None,
         "system": system,
         "control_groups": control_groups,
-        "project_form": ProjectForm(request.user),
     }
     return render(request, "controls/index.html", context)
 
@@ -109,7 +113,6 @@ def group(request, catalog_key, g_id):
         "common_controls": None,
         "control_groups": control_groups,
         "group": group,
-        "project_form": ProjectForm(request.user),
     }
     return render(request, "controls/index-group.html", context)
 
@@ -129,7 +132,6 @@ def control(request, catalog_key, cl_id):
     context = {
         "catalog": catalog,
         "control": cg_flat[cl_id.lower()],
-        "project_form": ProjectForm(request.user),
     }
     return render(request, "controls/detail.html", context)
 
@@ -160,19 +162,112 @@ def controls_selected(request, system_id):
                 impl_smts_count[c.oscal_ctl_id] = len(
                     system.smts_control_implementation_as_dict[c.oscal_ctl_id]['control_impl_smts'])
 
+        # Get list of catalog objects
+        catalog_list = Catalogs().list_catalogs()
+        # Remove the 3 nist catalogs that are hard-coded already in template
+        external_catalogs = [catalog for catalog in catalog_list if catalog.catalog_key not in ['NIST_SP-800-53_rev4', 'NIST_SP-800-53_rev5', 'NIST_SP-800-171_rev1' ]]
+
         # Return the controls
         context = {
             "system": system,
             "project": project,
             "controls": controls,
+            "external_catalogs": external_catalogs,
             "impl_smts_count": impl_smts_count,
             "enable_experimental_opencontrol": SystemSettings.enable_experimental_opencontrol,
-            "project_form": ProjectForm(request.user),
         }
         return render(request, "systems/controls_selected.html", context)
     else:
         # User does not have permission to this system
         raise Http404
+
+@login_required
+def system_controls_add(request, system_id):
+    """Add a selected control to a system (e.g., selected controls)"""
+
+    # Get control values from request.POST
+    catalog_key = request.POST['catalog_key'].replace(" ","_") # Make sure catalog key has underscores instead of spaces
+    control_id = request.POST['control_id']
+
+    system = System.objects.get(id=system_id)
+    controls = system.root_element.controls.all()
+
+    # If the catalog key and control id combination returns a result than don't add to controls selected
+    if controls.filter(Q(oscal_catalog_key=catalog_key)).filter(Q(oscal_ctl_id=control_id)):
+        messages.add_message(request, messages.WARNING, f"Control {control_id.upper()} in catalog {catalog_key} is already in selected controls!")
+        # Log result
+        logger.warning(
+                event="change_system add_selected_control",
+                object={"object": "control", "id": control_id, "catalog": catalog_key},
+                user={"id": request.user.id, "username": request.user.username}
+                )
+        return redirect(reverse('controls_selected', args=[system_id]))
+
+    # Retrieve related selected controls if user has permission on system
+    if request.user.has_perm('change_system', system):
+
+        # Add ElementControl to system
+        system.add_control(catalog_key, control_id)
+
+        # Create message for user
+        messages.add_message(request, messages.INFO, f"Control {control_id.upper()} added to selected controls.")
+
+    else:
+        # User does not have permission
+        # Log result
+        logger.info(
+                event="change_system add_selected_control permission_denied",
+                object={"object": "control", "id": control_id},
+                user={"id": request.user.id, "username": request.user.username}
+                )
+
+        # Create message for user
+        messages.add_message(request, messages.INFO, f"You do not have permission to edit the system.")
+
+    response = redirect(reverse('controls_selected', args=[system_id]))
+    return response
+
+@login_required
+def system_control_remove(request, system_id, element_control_id):
+    """Remove a selected control from a system and delete/hide the related statements"""
+
+    # Retrieve identified System
+    system = System.objects.get(id=system_id)
+    # Retrieve related selected controls if user has permission on system
+    if request.user.has_perm('change_system', system):
+
+        # Retrieve ElementControl
+        ec = ElementControl.objects.get(id=element_control_id)
+
+        # Delete the control implementation statements associated with this component
+        system.remove_control(element_control_id)
+        # result = element.statements_produced.filter(consumer_element=system.root_element).delete()
+        messages.add_message(request, messages.INFO, f"Removed control '{ec.oscal_ctl_id}' from system.")
+
+        # Log result
+        logger.info(
+                event="change_system remove_selected_control",
+                object={"object": "control", "id": element_control_id},
+                user={"id": request.user.id, "username": request.user.username}
+                )
+
+        # Create message for user
+        # messages.add_message(request, messages.INFO, f"Removed control '{element_control_id}' from system.")
+
+    else:
+        # User does not have permission
+        # Log result
+        logger.info(
+                event="change_system remove_selected_control permission_denied",
+                object={"object": "control", "id": element_control_id},
+                user={"id": request.user.id, "username": request.user.username}
+                )
+
+        # Create message for user
+        messages.add_message(request, messages.INFO, f"You do not have permission to edit the system.")
+
+    response = redirect(reverse('controls_selected', args=[system_id]))
+    return response
 
 @functools.lru_cache()
 def controls_updated(request, system_id):
@@ -203,40 +298,47 @@ def controls_updated(request, system_id):
             "controls": controls,
             "impl_smts_count": impl_smts_count,
             "enable_experimental_opencontrol": SystemSettings.enable_experimental_opencontrol,
-            "project_form": ProjectForm(request.user),
         }
         return render(request, "systems/controls_updated.html", context)
     else:
         # User does not have permission to this system
         raise Http404
 
-def rename_element(request,element_id):
-    """Update the component's name
+
+@login_required
+def edit_element(request, element_id):
+    """
+      Edit Element information as long as the name does not clash with a different element name
     Args:
         request ([HttpRequest]): The network request
     component_id ([int|str]): The id of the component
     Returns:
         [JsonResponse]: Either a ok status or an error
     """
-    try:
-        new_name = request.POST.get("name", "").strip() or None
-        new_description = request.POST.get("description", "").strip() or None
 
-        if Element.objects.filter(name=new_name).exists() is True:
-            return JsonResponse({ "status": "err", "message": "Name already in use"})
-            
-        element = get_object_or_404(Element, id=element_id)
-        element.name = new_name
-        element.description = new_description
-        element.save()
-        logger.info(
-            event="rename_element",
-            element={"id": element.id, "new_name": new_name, "new_description": new_description}
-        )
-        return JsonResponse({ "status": "ok" })
-    except:
-        import sys
-        return JsonResponse({ "status": "err", "message": sys.exc_info() })
+    # The original element(component)
+    ele_instance = get_object_or_404(Element, id=element_id)
+
+    if request.method == 'POST':
+        new_name = request.POST.get("name", "").strip() or None
+
+        # Check if the new component name is already in use and if the new name is different from the current name
+        if Element.objects.filter(name__iexact=new_name).exists() and new_name != ele_instance.name:
+            return JsonResponse({"status": "err", "message": "Name already in use"})
+
+        form = ElementEditForm(request.POST or None, instance=ele_instance)
+        if form.is_valid():
+            logger.info(
+                event="edit_element",
+                object={"object": "element", "id": form.instance.id, "name": form.instance.name},
+                user={"id": request.user.id, "username": request.user.username}
+            )
+            form.save()
+            return JsonResponse({"status": "ok"})
+        else:
+            errors = form.errors.get_json_data(escape_html=False)
+            msg_list = [f"{e.title()} - {errors[e][0]['message']}" for e in errors.keys()]
+            return JsonResponse({"status": "err", "message": "Please fix the following problems:<br>"+"<br>".join(msg_list)})
 
 class SelectedComponentsList(ListView):
     """
@@ -246,14 +348,14 @@ class SelectedComponentsList(ListView):
     template_name = 'systems/components_selected.html'
     context_object_name = 'system_elements'
     ordering = ['name']
-    paginate_by = 5
+    paginate_by = 25
 
     def get_queryset(self):
         """
         Return the systems producer elements.
         """
         system = System.objects.get(id=self.kwargs['system_id'])
-        return system.producer_elements
+        return [element for element in system.producer_elements if element.element_type != "system"]
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
@@ -264,26 +366,110 @@ class SelectedComponentsList(ListView):
         if self.request.user.has_perm('view_system', system):
             # Retrieve primary system Project
             # Temporarily assume only one project and get first project
-            project = system.projects.all()[0]
+            project = system.projects.first()
             context['project'] = project
             context['system'] = system
             context['elements'] = Element.objects.all().exclude(element_type='system')
-            context['project_form'] = ProjectForm(self.request.user)
             return context
         else:
             # User does not have permission to this system
             raise Http404
 
+@login_required
 def component_library(request):
     """Display the library of components"""
 
+    query = request.GET.get('search')
+    if query:
+        try:
+            element_list = Element.objects.filter(Q(name__icontains=query) | Q(tags__label__icontains=query)
+                                                  | Q(pk__in=set(Statement.objects.filter(body__search=query).values_list('producer_element', flat=True)))
+                                                 ).exclude(element_type='system').distinct()
+        except:
+            logger.info(f"Ah, you are not using Postgres for your Database!")
+            element_list = Element.objects.filter(Q(name__icontains=query) | Q(tags__label__icontains=query)).exclude(element_type='system').distinct()
+    else:
+        element_list = Element.objects.all().exclude(element_type='system').distinct()
+
+    # Natural sorting on name
+    element_list = natsorted(element_list, key=lambda x: x.name)
+
+    # Pagination
+    ele_paginator = Paginator(element_list, 15)
+    page_number = request.GET.get('page')
+
+    try:
+        page_obj = ele_paginator.page(page_number)
+    except PageNotAnInteger:
+        page_obj = ele_paginator.page(1)
+    except EmptyPage:
+        page_obj = ele_paginator.page(ele_paginator.num_pages)
+
     context = {
-        "elements": Element.objects.all().exclude(element_type='system').order_by('name'),
+        "page_obj": page_obj,
         "import_form": ImportOSCALComponentForm(),
+        "total_comps": Element.objects.exclude(element_type='system').count(),
     }
 
     return render(request, "components/component_library.html", context)
 
+def diff_components_prettyHtml(smt1, smt2):
+    """Generate a diff of two statements of type `control_implementation`"""
+    dmp = dmp_module.diff_match_patch()
+    val1 = ""
+    val2 = ""
+    if hasattr(smt1, 'body'):
+        val1 = smt1.body
+    if hasattr(smt2, 'body'):
+        val2 = smt2.body
+
+    diff = dmp.diff_main(val1, val2)
+    if len(diff) == 1:
+        return "Statement is identical."
+    return dmp.diff_prettyHtml(diff)
+
+def compare_components(request):
+    """
+    Compare submitted components
+    """
+    # TODO: need to figure out how to accumulate all checked boxes not one in pageobj
+    compare_list = request.POST.getlist('componentcomparecheckbox')
+    if compare_list:
+        element_list = list(Element.objects.filter(pk__in=compare_list).exclude(element_type='system').distinct())
+        compare_prime, element_list = element_list[0], element_list[1:]# The first component selected will be compared against the rest
+        compare_prime_smts = compare_prime.statements(StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value)
+    elif len(compare_list) <= 1:
+        # add messages
+        messages.add_message(request, messages.WARNING, f"Not enough components were selected to compare!")
+        return HttpResponseRedirect("/controls/components")
+    difference_tuples = []
+    differences = []
+    for component in element_list:
+        differences = []
+        # compare each component's statements to prime
+        cmt_smts = component.statements(StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value)
+        if cmt_smts.exists():
+            # TODO: Need to create a tuple with smt id to return appropriate
+            for smt in cmt_smts:
+                smt_prime = compare_prime_smts.filter(sid=smt.sid).filter(pid=smt.pid).filter(sid_class=smt.sid_class).first()
+                # If it is not a statement found in both components then we just add styling
+                if smt_prime:
+                    diff = diff_components_prettyHtml(smt_prime, smt)
+                else:
+                    diff = f"<span><ins style='background:#e6ffe6;'>{smt.body}</ins><span>"
+                differences.append(diff)
+        difference_tuples.extend(zip([component.name] * len(cmt_smts), cmt_smts, differences))
+    if request.method == 'POST':
+        context = {
+            "element_list": element_list,
+            "compare_prime": compare_prime,
+            "prime_smts": compare_prime_smts,
+            "secondary_smts": cmt_smts,
+            "differences": difference_tuples
+        }
+        return render(request, "components/compare_components.html", context)
+
+@login_required
 def import_records(request):
     """Display the records of component imports"""
 
@@ -299,6 +485,7 @@ def import_records(request):
 
     return render(request, "components/import_records.html", context)
 
+@login_required
 def import_record_details(request, import_record_id):
     """Display the records of component imports"""
 
@@ -311,6 +498,7 @@ def import_record_details(request, import_record_id):
     }
     return render(request, "components/import_record_details.html", context)
 
+@login_required
 def confirm_import_record_delete(request, import_record_id):
     """Delete the components and statements imported from a particular import record"""
 
@@ -328,6 +516,7 @@ def confirm_import_record_delete(request, import_record_id):
     }
     return render(request, "components/confirm_import_record_delete.html", context)
 
+@login_required
 def import_record_delete(request, import_record_id):
     """Delete the components and statements imported from a particular import record"""
 
@@ -355,12 +544,20 @@ class OSCALComponentSerializer(ComponentSerializer):
         else:
             return f"{control_id}_smt"
 
-
     def as_json(self):
         # Build OSCAL
         # Example: https://github.com/usnistgov/OSCAL/blob/master/src/content/ssp-example/json/example-component.json
         uuid = str(self.element.uuid)
         control_implementations = []
+        props = []
+        parties = []
+        responsible_roles =  {
+          "supplier": {
+            "party-uuids": [
+
+            ]
+          }
+        }
         of = {
             "component-definition": {
                 "uuid": str(uuid4()),
@@ -368,19 +565,30 @@ class OSCALComponentSerializer(ComponentSerializer):
                     "title": "{} Component-to-Control Narratives".format(self.element.name),
                     "published": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
                     "last-modified": self.element.updated.replace(microsecond=0).isoformat(),
-                    "version": "string",
-                    "oscal-version": "1.0.0-rc1"
+                    "version": self.element.updated.replace(microsecond=0).isoformat(),
+                    "oscal-version": "1.0.0-rc1",
+                   # "parties": parties,
+                    "props": props
                 },
                 "components": {
                     uuid: {
                         "title": self.element.full_name or self.element.name,
-                        "type": self.element.element_type or "software",
+                        "type": self.element.component_type or "software",
                         "description": self.element.description,
+                        #"responsible-roles": responsible_roles, # TODO: gathering party-uuids
                         "control-implementations": control_implementations
                     }
                 }
             },
         }
+
+        # Add component's tags if they exist
+        if self.element.tags.exists():
+            props.extend([{"name": "tag", "ns": "https://govready.com/ns/oscal", "value": tag.label} for tag in self.element.tags.all()])
+
+        # Remove 'metadata.props' key if no metadata.props exist
+        if len(props) == 0:
+            of['component-definition']['metadata'].pop('props', None)
 
         # create requirements and organize by source (sid_class)
 
@@ -409,8 +617,10 @@ class OSCALComponentSerializer(ComponentSerializer):
                 statement = {
                     "uuid": str(smt.uuid),
                     "description": smt.body,
-                    "remarks": smt.remarks
+                    "remarks": smt.remarks or ""
                 }
+                if smt.remarks is None:
+                    statement.pop('remarks', None)
                 statement_id = self.statement_id_from_control(control_id, smt.pid)
                 requirement["statements"][statement_id] = statement
 
@@ -424,6 +634,9 @@ class OSCALComponentSerializer(ComponentSerializer):
                 "implemented-requirements": [req for req in requirements]
             }
             control_implementations.append(control_implementation)
+        # Remove 'control-implementations' key if no implementations exist
+        if len(control_implementations) == 0:
+            of['component-definition']['components'][uuid].pop('control-implementations', None)
 
         oscal_string = json.dumps(of, sort_keys=False, indent=2)
         return oscal_string
@@ -459,13 +672,15 @@ class OpenControlComponentSerializer(ComponentSerializer):
 
 class ComponentImporter(object):
 
-    def import_components_as_json(self, import_name, json_object, request=None):
+    def import_components_as_json(self, import_name, json_object, request=None, existing_import_record=False):
         """Imports Components from a JSON object
 
         @type import_name: str
         @param import_name: Name of import file (if it exists)
         @type json_object: dict
         @param json_object: Element attributes from JSON object
+        @type existing_import_record: boolean
+        @param existing_import_record: Continue to append imports to an existing import record
         @rtype: ImportRecord if success, bool (false) if failure
         @returns: ImportRecord linked to the created components (if success) or False if failure
         """
@@ -480,55 +695,74 @@ class ComponentImporter(object):
             return False
         if self.validate_oscal_json(oscal_json):
             # Returns list of created components
+
             created_components = self.create_components(oscal_json)
-            new_import_record = self.create_import_record(import_name, created_components)
+            new_import_record = self.create_import_record(import_name, created_components, existing_import_record=existing_import_record)
             return new_import_record
         else:
+
             if request is not None:
                 messages.add_message(request, messages.ERROR, f"Invalid OSCAL. Component(s) not created.")
-            logger.info(f"Invalid JSON. Component(s) not created.")
+                logger.info(f"Invalid JSON. Component(s) not created.")
+            else:
+                logger.info(f"Invalid JSON. Component(s) not created.")
+
             return False
 
-    def create_import_record(self, import_name, components):
+    # def find_import_record_by_name(self, import_name):
+    #     """Returns most recent existing import record by name
+
+    #     @type import_name: str
+    #     @param import_name: Name of import file (if it exists)
+    #     """
+
+    #     found_import_record = ImportRecord.objects.filter(name=import_name).last()
+
+    #     return found_import_record
+
+    def create_import_record(self, import_name, components, existing_import_record=False):
         """Associates components and statements to an import record
 
         @type import_name: str
         @param import_name: Name of import file (if it exists)
         @type components: list
         @param components: List of components
+        @type existing_import_record: booleen
+        @param existing_import_record: Continue to append imports to an existing import record
         @rtype: ImportRecord
         @returns: New ImportRecord object with components and statements associated
         """
 
-        new_import_record = ImportRecord.objects.create(name=import_name)
+        import_record = ImportRecord.objects.filter(name=import_name).last()
+        if import_record is None or not existing_import_record:
+            import_record = ImportRecord.objects.create(name=import_name)
         for component in components:
             statements = Statement.objects.filter(producer_element=component)
             for statement in statements:
-                statement.import_record = new_import_record
-                statement.save()
-            component.import_record = new_import_record
+                statement.import_record = import_record
+                #statement.save()
+            component.import_record = import_record
             component.save()
 
-        return new_import_record
-
+        return import_record
 
     def validate_oscal_json(self, oscal_json):
         """Validates the JSON object is valid OSCAL format"""
 
         project_root = os.path.abspath(os.path.dirname(__name__))
         oscal_schema_path = os.path.join(project_root, "schemas", "oscal_component_schema.json")
+
         with open(oscal_schema_path, "r") as schema_content:
             oscal_json_schema = json.load(schema_content)
         try:
             validate(instance=oscal_json, schema=oscal_json_schema)
             return True
         except (SchemaError, SchemaValidationError) as e:
-            logger.info(e)
+            logger.error(e._contents())
             return False
 
     def create_components(self, oscal_json):
         """Creates Elements (Components) from valid OSCAL JSON"""
-
         components_created = []
         components = oscal_json['component-definition']['components']
         for component in components:
@@ -553,18 +787,19 @@ class ComponentImporter(object):
 
         new_component = Element.objects.create(
             name=component_name,
-            description=component_json['description'] if 'description' in component_json else '',
+            description=component_json['description'] if 'description' in component_json else 'Description missing',
             # Components uploaded to the Component Library are all system_element types
             # TODO: When components can be uploaded by project, set element_type from component-type OSCAL property
             element_type="system_element"
         )
 
         logger.info(f"Component {new_component.name} created with UUID {new_component.uuid}.")
-        control_implementation_statements = component_json['control-implementations']
-        for control_element in control_implementation_statements:
-            catalog = oscalize_catalog_key(control_element['source']) if 'source' in control_element else None
-            implemented_reqs = control_element['implemented-requirements'] if 'implemented-requirements' in control_element else []
-            created_statements = self.create_control_implementation_statements(catalog, implemented_reqs, new_component)
+        control_implementation_statements = component_json.get('control-implementations', None)
+        if control_implementation_statements:
+            for control_element in control_implementation_statements:
+                catalog = oscalize_catalog_key(control_element['source']) if 'source' in control_element else None
+                implemented_reqs = control_element['implemented-requirements'] if 'implemented-requirements' in control_element else []
+                created_statements = self.create_control_implementation_statements(catalog, implemented_reqs, new_component)
         return new_component
 
     def create_control_implementation_statements(self, catalog_key, implemented_reqs, parent_component):
@@ -610,7 +845,7 @@ class ComponentImporter(object):
                         sid_class=catalog_key,
                         pid=get_control_statement_part(stmnt_id),
                         body=description,
-                        statement_type="control_implementation_prototype",
+                        statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value,
                         remarks=remarks,
                         status=implemented_control['status'] if 'status' in implemented_control else None,
                         producer_element=parent_component,
@@ -642,21 +877,21 @@ class ComponentImporter(object):
             control = catalog.get_control_by_id(control_id)
             return True if control is not None else False
 
+@login_required
 def add_selected_components(system, import_record):
         """Add a component from the library or a compliance app to the project and its statements using the import record"""
 
         # Get components from import record
         imported_components = Element.objects.filter(import_record=import_record)
         for imported_component in imported_components:
-            # Loop through element's prototype statements and add to control implementation statements
+            # Loop through all element's prototype statements and add to control implementation statements.
+            # System's selected controls will filter what controls and control statements to display.
             for smt in Statement.objects.filter(producer_element_id=imported_component.id,
-                                                statement_type="control_implementation_prototype"):
-                # Add all existing control statements for a component to a system even if system does not use controls.
-                # This guarantees that control statements are associated.
-                # The selected controls will serve as the primary filter on what content to display.
-                smt.create_instance_from_prototype(system.root_element.id)
+                                                statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value):
+                smt.create_system_control_smt_from_component_prototype_smt(system.root_element.id)
         return imported_components
 
+@login_required
 def system_element(request, system_id, element_id):
     """Display System's selected element detail view"""
 
@@ -684,9 +919,12 @@ def system_element(request, system_id, element_id):
         # Build OSCAL and OpenControl
         oscal_string = OSCALComponentSerializer(element, impl_smts).as_json()
         opencontrol_string = OpenControlComponentSerializer(element, impl_smts).as_yaml()
-
+        states = [choice_tup[1] for choice_tup in ComponentStateEnum.choices()]
+        types = [choice_tup[1] for choice_tup in ComponentTypeEnum.choices()]
         # Return the system's element information
         context = {
+            "states": states,
+            "types": types,
             "system": system,
             "project": project,
             "element": element,
@@ -696,9 +934,87 @@ def system_element(request, system_id, element_id):
             "oscal": oscal_string,
             "enable_experimental_opencontrol": SystemSettings.enable_experimental_opencontrol,
             "opencontrol": opencontrol_string,
-            "project_form": ProjectForm(request.user),
         }
         return render(request, "systems/element_detail_tabs.html", context)
+
+def edit_component_state(request, system_id, element_id):
+    """
+    Edit system component state
+    """
+    # Retrieve identified System
+    system = System.objects.get(id=system_id)
+    # Retrieve related selected controls if user has permission on system
+    if request.user.has_perm('change_system', system):
+        # Retrieve element
+        # TODO: Make atomic transaction
+        element = Element.objects.get(id=element_id)
+        element.component_state = request.POST['state_change']
+        element.save()
+        logger.info(event=f"change_system update_component_state {element} {element.component_state}",
+                    object={"object": "system", "id": system.id},
+                    user={"id": request.user.id, "username": request.user.username})
+        # Batch update status of control implementation statements provided by the element to the system
+        state_status = {"operational": "Implemented", "under-development": "Partially Implemented", "planned": "Planned"}
+        control_status = state_status.get(request.POST['state_change']) or "Not Implemented"
+        system.set_component_control_status(element, control_status)
+        logger.info(event=f"change_system batch_update_component_control_status {element} {control_status}",
+                    object={"object": "system", "id": system.id},
+                    user={"id": request.user.id, "username": request.user.username})
+    return redirect(reverse('system_element', args=[system_id, element_id]))
+
+def edit_component_type(request, system_id, element_id):
+    """
+    Edit system component type
+    """
+    # Retrieve identified System
+    system = System.objects.get(id=system_id)
+    # Retrieve related selected controls if user has permission on system
+    if request.user.has_perm('change_system', system):
+        # Retrieve element
+        element = Element.objects.get(id=element_id)
+        element.component_type = request.POST['type_change']
+        element.save()
+    return redirect(reverse('system_element', args=[system_id, element_id]))
+
+@login_required
+def system_element_remove(request, system_id, element_id):
+    """Remove an element from a system and delete the controls it produces"""
+
+    # Retrieve identified System
+    system = System.objects.get(id=system_id)
+    # Retrieve related selected controls if user has permission on system
+    if request.user.has_perm('change_system', system):
+
+        # Retrieve element
+        element = Element.objects.get(id=element_id)
+
+        # Delete the control implementation statements associated with this component
+        result = element.statements_produced.filter(consumer_element=system.root_element).delete()
+
+        # Log result
+        logger.info(
+                event="change_system remove_component",
+                object={"object": "component", "id": element.id},
+                user={"id": request.user.id, "username": request.user.username}
+                )
+
+        # Create message for user
+        messages.add_message(request, messages.INFO, f"Removed component '{element.name}' from system.")
+
+    else:
+        # User does not have permission
+        # Log result
+        logger.info(
+                event="change_system remove_component permission_denied",
+                object={"object": "component", "id": element_id},
+                user={"id": request.user.id, "username": request.user.username}
+                )
+
+        # Create message for user
+        messages.add_message(request, messages.INFO, f"You do not have permission to edit the system.")
+
+    response = redirect(reverse('components_selected', args=[system_id]))
+    return response
 
 @login_required
 def new_element(request):
@@ -722,15 +1038,23 @@ def new_element(request):
         'form': form,
     })
 
+@login_required
 def component_library_component(request, element_id):
     """Display certified component's element detail view"""
 
     # Retrieve element
     element = Element.objects.get(id=element_id)
+    smt_query = request.GET.get('search')
 
-    # Retrieve impl_smts produced by element and consumed by system
-    # Get the impl_smts contributed by this component to system
-    impl_smts = element.statements_produced.filter(statement_type="control_implementation_prototype")
+    # Retrieve systems consuming element
+    consuming_systems = element.consuming_systems()
+
+    if smt_query:
+        impl_smts = element.statements_produced.filter(sid__icontains=smt_query, statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value)
+    else:
+        # Retrieve impl_smts produced by element and consumed by system
+        # Get the impl_smts contributed by this component to system
+        impl_smts = element.statements_produced.filter(statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value)
 
     if len(impl_smts) < 1:
         context = {
@@ -757,9 +1081,27 @@ def component_library_component(request, element_id):
         oscal_string = OSCALComponentSerializer(element, impl_smts).as_json()
         opencontrol_string = OpenControlComponentSerializer(element, impl_smts).as_yaml()
 
+    # Use natsort here to handle the sid that has letters and numbers
+    # (e.g. to put AC-14 after AC-2 whereas before it was putting AC-14 before AC-2)
+    # using the natsort package from pypi: https://pypi.org/project/natsort/
+    impl_smts = natsorted(impl_smts, key=lambda x: x.sid)
+
+    # Pagination
+    obj_paginator = Paginator(impl_smts, 10)
+    page_number = request.GET.get('page')
+
+    try:
+        page_obj = obj_paginator.page(page_number)
+    except PageNotAnInteger:
+        page_obj = obj_paginator.page(1)
+    except EmptyPage:
+        page_obj = obj_paginator.page(obj_paginator.num_pages)
+
     # Return the system's element information
     context = {
+        "page_obj": page_obj,
         "element": element,
+        "consuming_systems": consuming_systems,
         "impl_smts": impl_smts,
         "catalog_controls": catalog_controls,
         "catalog_key": catalog_key,
@@ -768,10 +1110,10 @@ def component_library_component(request, element_id):
         "enable_experimental_opencontrol": SystemSettings.enable_experimental_opencontrol,
         "enable_experimental_oscal": SystemSettings.enable_experimental_oscal,
         "opencontrol": opencontrol_string,
-        # "project_form": ProjectForm(request.user),
     }
     return render(request, "components/element_detail_tabs.html", context)
 
+@login_required
 def api_controls_select(request):
     """Return list of controls in json for select2 options from all control catalogs"""
 
@@ -789,17 +1131,10 @@ def api_controls_select(request):
         cxs.extend(select_list)
     # Sort the accummulated list
     cxs.sort(key = operator.itemgetter('id', 'catalog_key_display'))
-    data = cxs
 
-    if True:
-        status = "ok"
-        message = "Sending list."
-        return JsonResponse( {"status": "success", "message": message, "data": {"controls": data} })
-    else:
-        status = "error"
-        message = "Could not generate controls list."
-        data = {}
-        return JsonResponse({"status": status, "message": message, "data": data})
+    status = "success"
+    message = "Sending list."
+    return JsonResponse( {"status": status, "message": message, "data": {"controls": cxs} })
 
 @login_required
 def component_library_component_copy(request, element_id):
@@ -808,9 +1143,9 @@ def component_library_component_copy(request, element_id):
     # Retrieve element
     element = Element.objects.get(id=element_id)
     count = Element.objects.filter(uuid=element.uuid).count()
-    
+
     if count > 0:
-        e_copy = element.copy(name=element.name + " copy ("+str(count+1)+')') 
+        e_copy = element.copy(name=element.name + " copy ("+str(count+1)+')')
     else:
         e_copy = element.copy()
 
@@ -894,7 +1229,7 @@ def restore_to_history(request, smt_id, history_id):
 
     # Check permission
     raise_404_if_not_permitted_to_statement(request, smt, 'change_system')
-                        
+
     full_smt_history = None
     for query_key in request.POST:
         if "restore" in query_key:
@@ -936,6 +1271,7 @@ def restore_to_history(request, smt_id, history_id):
 
     return render(request, "controls/statement_history.html", context)
 
+@login_required
 def system_element_download_oscal_json(request, system_id, element_id):
 
     if system_id is not None and system_id != '':
@@ -1280,52 +1616,14 @@ def controls_selected_export_xacta_xslx(request, system_id):
 def editor(request, system_id, catalog_key, cl_id):
     """System Control detail view"""
 
-    cl_id = oscalize_control_id(cl_id)
-    catalog_key = oscalize_catalog_key(catalog_key)
-
-    # Get control catalog
-    catalog = Catalog(catalog_key)
-
-    # TODO: maybe catalogs could provide an API that returns a set of
-    # control ids instead?
-
-    cg_flat = catalog.get_flattened_controls_all_as_dict()
-
-    # If control id does not exist in catalog
-    if cl_id.lower() not in cg_flat:
-        return render(request, "controls/detail.html", {"catalog": catalog,"control": {}})
-
-    # Retrieve identified System
-    system = System.objects.get(id=system_id)
+    cl_id, catalog_key, system = get_editor_system(cl_id, catalog_key, system_id)
 
     # Retrieve related statements if user has permission on system
     if request.user.has_perm('view_system', system):
         # Retrieve primary system Project
-        # Temporarily assume only one project and get first project
-        project = system.projects.all()[0]
-        # if len(projects) > 0:
-        #     project = projects[0]
-        # Retrieve any related CommonControls
-        # CRITICAL TODO: Filter by sid and by system.root_element
+        project, catalog, cg_flat, impl_smts = get_editor_data(request, system, catalog_key, cl_id)
 
-        # Retrieve organizational parameter settings for this catalog
-        # We need to grab the catalog again.
-
-        parameter_values = project.get_parameter_values(catalog_key)
-        catalog = Catalog(catalog_key, parameter_values=parameter_values)
-        cg_flat = catalog.get_flattened_controls_all_as_dict()
-
-        common_controls = CommonControl.objects.filter(oscal_ctl_id=cl_id)
-        ccp_name = None
-        if common_controls:
-            cc = common_controls[0]
-            ccp_name = cc.common_control_provider.name
-        # Get and return the control
-
-        # Retrieve any related Implementation Statements filtering by control and system.root_element
-        impl_smts = Statement.objects.filter(sid=cl_id, consumer_element=system.root_element).order_by('pid')
-
-        # Build OSCAL
+        # Build OSCAL SSP
         # Example: https://github.com/usnistgov/OSCAL/blob/master/content/ssp-example/json/ssp-example.json
         of = {
             "system-security-plan": {
@@ -1369,6 +1667,8 @@ def editor(request, system_id, catalog_key, cl_id):
                     "remarks": smt.remarks
                 },
             }
+            if smt.remarks is None:
+                my_dict[smt.sid + "{}".format(smt.producer_element.name.replace(" ", "-"))].pop("remarks", None)
             by_components.update(my_dict)
         oscal_string = json.dumps(of, sort_keys=False, indent=2)
 
@@ -1390,15 +1690,12 @@ def editor(request, system_id, catalog_key, cl_id):
             "project": project,
             "catalog": catalog,
             "control": cg_flat[cl_id.lower()],
-            "common_controls": common_controls,
-            "ccp_name": ccp_name,
             "impl_smts": impl_smts,
             "impl_statuses": impl_statuses,
             "combined_smt": combined_smt,
             "oscal": oscal_string,
             "enable_experimental_opencontrol": SystemSettings.enable_experimental_opencontrol,
             "opencontrol": "opencontrol_string",
-            "project_form": ProjectForm(request.user),
             "elements": elements,
         }
         return render(request, "controls/editor.html", context)
@@ -1407,44 +1704,57 @@ def editor(request, system_id, catalog_key, cl_id):
         raise Http404
 
 @login_required
-def editor_compare(request, system_id, catalog_key, cl_id):
-    """System Control detail view"""
+def get_editor_data(request, system, catalog_key, cl_id):
+    """
+    Get data for editor views
+    """
 
-    cl_id = oscalize_control_id(cl_id)
-
-    # Get control catalog
-    catalog = Catalog(catalog_key)
-    cg_flat = catalog.get_flattened_controls_all_as_dict()
-    # If control id does not exist in catalog
-    if cl_id.lower() not in cg_flat:
-        return render(request, "controls/detail.html", {"catalog": catalog,"control": {}})
-
-    # Retrieve identified System
-    system = System.objects.get(id=system_id)
-    # Retrieve related statements if owner has permission on system
+    # Retrieve related statements if user has permission on system
     if request.user.has_perm('view_system', system):
         # Retrieve primary system Project
         # Temporarily assume only one project and get first project
-        project = system.projects.all()[0]
-        # Retrieve any related CommonControls
-        common_controls = CommonControl.objects.filter(oscal_ctl_id=cl_id)
-        ccp_name = None
-        if common_controls:
-            cc = common_controls[0]
-            ccp_name = cc.common_control_provider.name
-        # Get and return the control
+        project = system.projects.first()
+        parameter_values = project.get_parameter_values(catalog_key)
+        catalog = Catalog(catalog_key, parameter_values=parameter_values)
+        cg_flat = catalog.get_flattened_controls_all_as_dict()
+        # If control id does not exist in catalog
+        if cl_id.lower() not in cg_flat:
+            return render(request, "controls/detail.html", {"catalog": catalog, "control": {}})
 
-        # Retrieve any related Implementation Statements
-        impl_smts = Statement.objects.filter(sid=cl_id)
+        # Get and return the control
+        # Retrieve any related Implementation Statements filtering by control, and system.root_element, Catalog
+        impl_smts = Statement.objects.filter(sid=cl_id, consumer_element=system.root_element, sid_class=catalog_key).order_by('pid')
+        return project, catalog, cg_flat, impl_smts
+
+def get_editor_system(cl_id, catalog_key, system_id):
+    """
+    Retrieves oscalized control id and catalog key. Also system object from system id.
+    """
+
+    cl_id = oscalize_control_id(cl_id)
+
+    catalog_key = oscalize_catalog_key(catalog_key)
+
+    # Retrieve identified System
+    system = System.objects.get(id=system_id)
+
+    return cl_id, catalog_key, system
+
+@login_required
+def editor_compare(request, system_id, catalog_key, cl_id):
+    """System Control detail view"""
+
+    cl_id, catalog_key, system = get_editor_system(cl_id, catalog_key, system_id)
+
+    # Retrieve related statements if owner has permission on system
+    if request.user.has_perm('view_system', system):
+        project, catalog, cg_flat, impl_smts = get_editor_data(request, system, catalog_key, cl_id)
         context = {
             "system": system,
             "project": project,
             "catalog": catalog,
             "control": cg_flat[cl_id.lower()],
-            "common_controls": common_controls,
-            "ccp_name": ccp_name,
             "impl_smts": impl_smts,
-            "project_form": ProjectForm(request.user),
         }
         return render(request, "controls/compare.html", context)
     else:
@@ -1453,6 +1763,7 @@ def editor_compare(request, system_id, catalog_key, cl_id):
 
 
 # @task_view
+@login_required
 def save_smt(request):
     """Save a statement"""
 
@@ -1493,36 +1804,41 @@ def save_smt(request):
         form_values = {}
         for key in form_dict.keys():
             form_values[key] = form_dict[key][0]
+        print(form_dict)
+        smt_id = form_values['smt_id']
         # Updating or saving a new statement?
-        if len(form_values['smt_id']) > 0:
+        if len(smt_id) > 0:
             # Look up existing Statement object
-            statement = Statement.objects.get(pk=form_values['smt_id'])
+            statement = Statement.objects.get(pk=smt_id)
+            # Check if statement has the same sid class as the statement object
+            if statement.sid_class == form_values['sid_class']:
+                # Check user permissions
+                system = statement.consumer_element
+                if not request.user.has_perm('change_system', system):
+                    # User does not have write permissions
+                    # Log permission to save answer denied
+                    logger.info(
+                        event="save_smt permission_denied",
+                        object={"object": "statement", "id": statement.id},
+                        user={"id": request.user.id, "username": request.user.username}
+                    )
+                    return HttpResponseForbidden(
+                        "Permission denied. {} does not have change privileges to system and/or project.".format(
+                            request.user.username))
 
-            # Check user permissions
-            system = statement.consumer_element
-            if not request.user.has_perm('change_system', system):
-                # User does not have write permissions
-                # Log permission to save answer denied
-                logger.info(
-                    event="save_smt permission_denied",
-                    object={"object": "statement", "id": statement.id},
-                    user={"id": request.user.id, "username": request.user.username}
-                )
-                return HttpResponseForbidden(
-                    "Permission denied. {} does not have change privileges to system and/or project.".format(
-                        request.user.username))
-
-            if statement is None:
-                # Statement from received has an id no longer in the database.
-                # Report error. Alternatively, in future save as new Statement object
-                statement_status = "error"
-                statement_msg = "The id for this statement is no longer valid in the database."
-                return JsonResponse({"status": "error", "message": statement_msg})
-            # Update existing Statement object with received info
-            statement.pid = form_values['pid']
-            statement.body = form_values['body']
-            statement.remarks = form_values['remarks']
-            statement.status = form_values['status']
+                if statement is None:
+                    # Statement from received has an id no longer in the database.
+                    # Report error. Alternatively, in future save as new Statement object
+                    statement_status = "error"
+                    statement_msg = "The id for this statement is no longer valid in the database."
+                    return JsonResponse({"status": statement_status, "message": statement_msg})
+                # Update existing Statement object with received info
+                statement.pid = form_values['pid']
+                statement.body = form_values['body']
+                statement.remarks = form_values['remarks']
+                statement.status = form_values['status']
+            else:
+                new_statement = True
         else:
             # Create new Statement object
             statement = Statement(
@@ -1536,18 +1852,9 @@ def save_smt(request):
             )
             new_statement = True
             # Convert the human readable catalog name to proper catalog key, if needed
-            # from huma readable `NIST SP-800-53 rev4` to `NIST_SP-800-53_rev4`
+            # from human readable `NIST SP-800-53 rev4` to `NIST_SP-800-53_rev4`
             statement.sid_class = statement.sid_class.replace(" ","_")
 
-        # Save Statement object
-        try:
-            statement.save()
-            statement_status = "ok"
-            statement_msg = "Statement saved."
-        except Exception as e:
-            statement_status = "error"
-            statement_msg = "Statement save failed. Error reported {}".format(e)
-            return JsonResponse({"status": "error", "message": statement_msg})
 
         # Updating or saving a new producer_element?
         try:
@@ -1562,21 +1869,21 @@ def save_smt(request):
         except Exception as e:
             producer_element_status = "error"
             producer_element_msg = "Producer Element save failed. Error reported {}".format(e)
-            return JsonResponse({"status": "error", "message": producer_element_msg})
+            return JsonResponse({"status": producer_element_status, "message": producer_element_msg})
 
         # Associate Statement and Producer Element if creating new statement
         if new_statement:
             try:
                 statement.producer_element = producer_element
-                statement.save()
+                #statement.save()
                 statement_element_status = "ok"
                 statement_element_msg = "Statement associated with Producer Element."
+                messages.add_message(request, messages.INFO, f"{statement_element_msg} {producer_element.id}.")
             except Exception as e:
                 statement_element_status = "error"
                 statement_element_msg = "Failed to associate statement with Producer Element {}".format(e)
                 return JsonResponse(
-                    {"status": "error", "message": statement_msg + " " + producer_element_msg + " " + statement_element_msg})
-
+                    {"status": statement_element_status, "message": statement_element_msg + " " + producer_element_msg + " " + statement_element_msg})
         # Create new Prototype Statement object on new statement creation (not statement edit)
         if new_statement:
             try:
@@ -1590,7 +1897,7 @@ def save_smt(request):
         # A statement of type `control_implementation` should only exists if associated a consumer_element.
         # When the statement is created in the component library, no consuming_element will exist.
         # TODO
-        # - Delete the statement that created the statement prototyp
+        # - Delete the statement that created the statement prototype
         # - Skip the associating the statement with the system's root_element because we do not have a system identified
         statement_del_msg = ""
         if "form_source" in form_values and form_values['form_source'] == 'component_library':
@@ -1607,14 +1914,13 @@ def save_smt(request):
             if new_statement and system_id is not None:
                 try:
                     statement.consumer_element = System.objects.get(pk=form_values['system_id']).root_element
-                    statement.save()
-                    statement_consumer_status = "ok"
-                    statement_consumer_msg = "Statement associated with System/Consumer Element."
+                    #statement.save()
+                    statement_msg = "Statement associated with System/Consumer Element."
                 except Exception as e:
                     statement_consumer_status = "error"
                     statement_consumer_msg = "Failed to associate statement with System/Consumer Element {}".format(e)
                     return JsonResponse(
-                        {"status": "error", "message": statement_msg + " " + producer_element_msg + " " + statement_consumer_msg})
+                        {"status": statement_consumer_status, "message": statement_msg + " " + producer_element_msg + " " + statement_consumer_msg})
 
             # Serialize saved data object(s) to send back to update web page
             # The submitted form needs to be updated with the object primary keys (ids)
@@ -1622,11 +1928,22 @@ def save_smt(request):
             from django.core import serializers
             serialized_obj = serializers.serialize('json', [statement, ])
 
+    # Save Statement object
+    try:
+        statement.save()
+        statement_msg = "Statement saved."
+        messages.add_message(request, messages.INFO, f"Statement {smt_id} Saved")
+    except Exception as e:
+        statement_status = "error"
+        statement_msg = "Statement save failed. Error reported {}".format(e)
+
+        return JsonResponse({"status": statement_status, "message": statement_msg})
     # Return successful save result to web page's Ajax request
     return JsonResponse(
         {"status": "success", "message": statement_msg + " " + producer_element_msg + " " + statement_del_msg,
          "statement": serialized_obj})
 
+@login_required
 def update_smt_prototype(request):
     """Update a certified statement"""
 
@@ -1639,11 +1956,11 @@ def update_smt_prototype(request):
         form_values = {}
         for key in form_dict.keys():
             form_values[key] = form_dict[key][0]
-
-        statement = get_object_or_404(Statement, pk=form_values['smt_id'])
+        smt_id = form_values['smt_id']
+        statement = get_object_or_404(Statement, pk=smt_id)
 
         # Check permission
-        raise_404_if_not_permitted_to_modify_statement(request, statement)
+        raise_404_if_not_permitted_to_statement(request, statement)
 
         if statement is None:
             statement_msg = "The id for this statement is no longer valid in the database."
@@ -1663,6 +1980,7 @@ def update_smt_prototype(request):
 
         return JsonResponse({ "status": "success", "message": statement_msg, "data": { "smt_body": statement.body } })
 
+@login_required
 def delete_smt(request):
     """Delete a statement"""
 
@@ -1702,9 +2020,9 @@ def delete_smt(request):
         form_values = {}
         for key in form_dict.keys():
             form_values[key] = form_dict[key][0]
-
+        smt_id = form_values['smt_id']
         # Delete statement?
-        statement = Statement.objects.get(pk=form_values['smt_id'])
+        statement = Statement.objects.get(pk=smt_id)
 
         # Check user permissions
         system = statement.consumer_element
@@ -1755,6 +2073,7 @@ def delete_smt(request):
 
 # Components
 
+@login_required
 def add_system_component(request, system_id):
     """Add an existing element and its statements to a system"""
 
@@ -1786,11 +2105,6 @@ def add_system_component(request, system_id):
     elements_selected = system.producer_elements
     elements_selected_ids = [e.id for e in elements_selected]
 
-    # Get system's selected controls because we only want to add statements for selected controls
-    selected_controls = system.root_element.controls.all()
-    selected_controls_ids = set([f"{sc.oscal_ctl_id} {sc.oscal_catalog_key}" for sc in selected_controls])
-    # TODO: Refactor above line selected_controls into a system model function if not already existing
-
     # Add element to system's selected components
     # Look up the element rto add
     producer_element = Element.objects.get(pk=form_values['producer_element_id'])
@@ -1806,7 +2120,7 @@ def add_system_component(request, system_id):
         # Redirect to selected element page
         return HttpResponseRedirect("/systems/{}/components/selected".format(system_id))
 
-    smts = Statement.objects.filter(producer_element_id = producer_element.id, statement_type="control_implementation_prototype")
+    smts = Statement.objects.filter(producer_element_id = producer_element.id, statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value)
 
     # Component does not have any statements of type control_implementation_prototype to
     # add to system. So we cannot add the component (element) to the system.
@@ -1817,15 +2131,13 @@ def add_system_component(request, system_id):
         # Redirect to selected element page
         return HttpResponseRedirect("/systems/{}/components/selected".format(system_id))
 
-    # Loop through element's prototype statements and add to control implementation statements
-    for smt in Statement.objects.filter(producer_element_id = producer_element.id, statement_type="control_implementation_prototype"):
-        # Add all existing control statements for a component to a system even if system does not use controls.
-        # This guarantees that control statements are associated.
-        # The selected controls will serve as the primary filter on what content to display.
-        smt.create_instance_from_prototype(system.root_element.id)
+    # Loop through all element's prototype statements and add to control implementation statements.
+    # System's selected controls will filter what controls and control statements to display.
+    for smt in smts:
+        smt.create_system_control_smt_from_component_prototype_smt(system.root_element.id)
 
     # Make sure some controls were added to the system. Report error otherwise.
-    smts_added = Statement.objects.filter(producer_element_id = producer_element.id, consumer_element_id = system.root_element.id, statement_type="control_implementation")
+    smts_added = Statement.objects.filter(producer_element_id = producer_element.id, consumer_element_id = system.root_element.id, statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value)
 
     smts_added_count = len(smts_added)
     if smts_added_count > 0:
@@ -1838,6 +2150,7 @@ def add_system_component(request, system_id):
     # Redirect to selected element page
     return HttpResponseRedirect("/systems/{}/components/selected".format(system_id))
 
+@login_required
 def search_system_component(request):
     """Add an existing element and its statements to a system"""
 
@@ -2055,13 +2368,13 @@ class EditorAutocomplete(View):
                 for related_element in form_values['relatedcomps']:
 
                     # Look up the element
-                    for smt in Statement.objects.filter(id=related_element, statement_type="control_implementation"):
+                    for smt in Statement.objects.filter(id=related_element, statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value):
                         logger.info(
                             f"Adding an element with the id {smt.id} and sid class {smt.sid} to system_id {system_id}")
                         # Only add statements for controls selected for system
                         if "{} {}".format(smt.sid, smt.sid_class) in selected_controls_ids:
                             logger.info(f"smt {smt}")
-                            smt.create_instance_from_prototype(system.root_element.id)
+                            smt.create_system_control_smt_from_component_prototype_smt(system.root_element.id)
                         else:
                             logger.error(f"not adding smt from selected controls for the current system: {smt}")
 
@@ -2070,7 +2383,7 @@ class EditorAutocomplete(View):
 
 
 # Baselines
-
+@login_required
 def assign_baseline(request, system_id, catalog_key, baseline_name):
     """Assign a baseline to a system root element thereby showing selected controls for the system."""
 
@@ -2096,7 +2409,7 @@ def assign_baseline(request, system_id, catalog_key, baseline_name):
 
 
 # Export OpenControl
-
+@login_required
 def export_system_opencontrol(request, system_id):
     """Export entire system in OpenControl"""
 
@@ -2233,6 +2546,7 @@ certifications:
         raise Http404
 
 # PoamS
+@login_required
 def poams_list(request, system_id):
     """List Poams for a system"""
 
@@ -2260,13 +2574,13 @@ def poams_list(request, system_id):
             "controls": controls,
             "poam_smts": poam_smts,
             "enable_experimental_opencontrol": SystemSettings.enable_experimental_opencontrol,
-            "project_form": ProjectForm(request.user),
         }
         return render(request, "systems/poams_list.html", context)
     else:
         # User does not have permission to this system
         raise Http404
 
+@login_required
 def new_poam(request, system_id):
     """Form to create new POAM"""
 
@@ -2306,12 +2620,12 @@ def new_poam(request, system_id):
                 'system': system,
                 'project': project,
                 'controls': controls,
-                "project_form": ProjectForm(request.user),
             })
     else:
         # User does not have permission to this system
         raise Http404
 
+@login_required
 def edit_poam(request, system_id, poam_id):
     """Form to create new POAM"""
 
@@ -2363,18 +2677,20 @@ def edit_poam(request, system_id, poam_id):
                 'project': project,
                 'controls': controls,
                 'poam_smt': poam_smt,
-                "project_form": ProjectForm(request.user),
             })
     else:
         # User does not have permission to this system
         raise Http404
 
+@login_required
 def poam_export_xlsx(request, system_id):
     return poam_export(request, system_id, 'xlsx')
 
+@login_required
 def poam_export_csv(request, system_id):
     return poam_export(request, system_id, 'csv')
 
+@login_required
 def poam_export(request, system_id, format='xlsx'):
     """Export POA&M in either xlsx or csv"""
 
@@ -2522,6 +2838,7 @@ def poam_export(request, system_id, format='xlsx'):
         raise Http404
 
 # Project
+@login_required
 def project_import(request, project_id):
     """
     Import an entire project's components and control content
@@ -2531,27 +2848,22 @@ def project_import(request, project_id):
     # Retrieve identified System
     system = System.objects.get(id=system_id)
     system_root_element = system.root_element
-    # TODO: deprecated need. Should consider removing throughout
-    #src = AppSource.objects.get(id=request.POST["appsource_compapp"])
-   # app = AppVersion.objects.get(source=src, id=request.POST["appsource_version_id"])
+
     # Retrieve identified System
     if request.method == 'POST':
         project_data = request.POST['json_content']
         # Need to get or create the app source by the id of the given app source
-        module_name = json.loads(project_data).get('project').get('module').get('key')
+        #module_name = json.loads(project_data).get('project').get('module').get('key')
         title = json.loads(project_data).get('project').get('title')
         system_root_element.name = title
-        importcheck = False
-        if "importcheck" in request.POST:
-            importcheck = request.POST["importcheck"]
 
-        # We are just updating the current project
-        if importcheck == False:
-            logger.info(
-                event="project JSON import update",
-                object={"object": "project", "id": project.id, "title": project.title},
-                user={"id": request.user.id, "username": request.user.username}
-            )
+
+
+        logger.info(
+            event="project JSON import update",
+            object={"object": "project", "id": project.id, "title": project.title},
+            user={"id": request.user.id, "username": request.user.username}
+        )
         messages.add_message(request, messages.INFO, f'Updated project with id : {project.id}.')
 
         #Import questionnaire data
@@ -2604,11 +2916,9 @@ def project_import(request, project_id):
                     body= poamsmt_data.get('body'),
                     remarks= poam.get('remarks'),
                     version= poam.get('version'),
-                    created= poam.get('created'),
-                    updated= poam.get('updated'),
                     statement_type="POAM",
                     status= poamsmt_data.get('status', "New"),
-                    uuid= poam.get('uuid'),
+                    uuid= str(uuid4()),
                     consumer_element= system_root_element
                 )
                 # Create Poam with statement and imported data
@@ -2617,7 +2927,6 @@ def project_import(request, project_id):
                                            risk_rating_original = poam.get('risk_rating_original'), scheduled_completion_date = poam.get('scheduled_completion_date'),
                                            weakness_detection_source = poam.get('weakness_detection_source'), weakness_name = poam.get('weakness_name'),
                                            weakness_source_identifier = poam.get('weakness_source_identifier'), poam_group = poam.get('poam_group'))
-                poam.save()
                 poam_num += 1
                 logger.info(
                     event="Poam import",
@@ -2628,6 +2937,7 @@ def project_import(request, project_id):
 
         return HttpResponseRedirect("/projects")
 
+@login_required
 def project_export(request, project_id):
     """
     Export an entire project's components and control content
@@ -2649,8 +2959,6 @@ def project_export(request, project_id):
             impl_smts = element.statements_produced.filter(consumer_element=system_root_element)
             component = OSCALComponentSerializer(element, impl_smts).as_json()
             oscal_comps.append(component)
-
-
         poams = []
         poam_smts = system_root_element.statements_consumed.filter(statement_type="POAM").order_by('id')
         for smt in poam_smts:
@@ -2671,7 +2979,7 @@ def project_export(request, project_id):
                     "remarks": smt.remarks,
                     "version": smt.remarks,
                     "status": smt.status,
-                    "uuid": smt.uuid,
+                    "uuid": str(smt.uuid),
                 }
             }
             # Add json version as an element in the poams list
@@ -2686,6 +2994,7 @@ def project_export(request, project_id):
     return response
 
 # System OSCAL
+@login_required
 def system_profile_oscal_json(request, system_id):
     """
     Return an OSCAL profile for this system.
@@ -2698,6 +3007,7 @@ def system_profile_oscal_json(request, system_id):
     return response
 
 # System Deployments
+@login_required
 def system_deployments(request, system_id):
     """List deployments for a system"""
 
@@ -2719,7 +3029,6 @@ def system_deployments(request, system_id):
             "system": system,
             "project": project,
             "deployments": deployments,
-            "project_form": ProjectForm(request.user),
         }
         return render(request, "systems/deployments_list.html", context)
     else:
@@ -2766,7 +3075,6 @@ def manage_system_deployment(request, system_id, deployment_id=None):
     return render(request, 'systems/deployment_form.html', {
         "form": form,
         "deployment": di,
-        "project_form": ProjectForm(request.user),
     })
 
 @login_required
@@ -2788,7 +3096,6 @@ def deployment_history(request, system_id, deployment_id=None):
         messages.add_message(request, messages.ERROR, f'The deployment id is not valid. Is this still a deployment in GovReady?')
     context = {
         "deployment": full_dpt_history,
-        "project_form": ProjectForm(request.user),
         }
     return render(request, "systems/deployment_history.html", context)
 
@@ -2823,7 +3130,6 @@ def system_deployment_inventory(request, system_id, deployment_id):
             # "poam_smts": poam_smts,
             # "enable_experimental_opencontrol": SystemSettings.enable_experimental_opencontrol,
             # "enable_experimental_oscal": SystemSettings.enable_experimental_oscal,
-            # "project_form": ProjectForm(request.user),
         }
         return render(request, "systems/deployment_inventory.html", context)
     else:
@@ -2851,14 +3157,13 @@ def system_assessment_results_list(request, system_id=None):
         # Retrieve primary system Project
         # Temporarily assume only one project and get first project
         project = system.projects.all()[0]
-        sars = system.system_assessment_result.all().order_by(Lower('name'))
+        sars = system.system_assessment_result.all().order_by('created').reverse()
 
         # Return the controls
         context = {
             "system": system,
             "project": project,
             "sars": sars,
-            "project_form": ProjectForm(request.user),
         }
         return render(request, "systems/sar_list.html", context)
 
@@ -2877,7 +3182,8 @@ def view_system_assessment_result_summary(request, system_id, sar_id=None):
     project = system.projects.all()[0]
     sar = get_object_or_404(SystemAssessmentResult, pk=sar_id) if sar_id else None
 
-    sar_items = [item for item in sar.assessment_results] if sar.assessment_results != None else []
+    # Get assessment targets results from wrapped SAR data
+    sar_items = [item for item in sar.assessment_results['sar']] if sar.assessment_results != None else []
 
     # Get summary pass fail across all assessment results included collection
     # TODO: note high/low category
@@ -2891,7 +3197,6 @@ def view_system_assessment_result_summary(request, system_id, sar_id=None):
         "sar_items": sar_items,
         "assessment_results_json": json.dumps(sar.assessment_results, indent=4, sort_keys=True),
         "summary": summary,
-        "project_form": ProjectForm(request.user),
     })
 
 @login_required
@@ -2930,11 +3235,12 @@ def manage_system_assessment_result(request, system_id, sar_id=None):
         if sari is None:
             sari = SystemAssessmentResult(system_id=system_id)
         form = SystemAssessmentResultForm(instance=sari)
+        # Filter deployments to current system
+        form.fields["deployment"].queryset = Deployment.objects.filter(system__id=system_id)
 
     return render(request, 'systems/sar_form.html', {
         'form': form,
         'system_id': system_id,
-        "project_form": ProjectForm(request.user),
     })
 
 @login_required
@@ -2950,6 +3256,5 @@ def system_assessment_result_history(request, system_id, sar_id=None):
         messages.add_message(request, messages.ERROR, f'The system assessment result id is not valid. Is this still a system assessment result in GovReady?')
     context = {
         "deployment": full_sar_history,
-        "project_form": ProjectForm(request.user),
     }
     return render(request, "systems/sar_history.html", context)

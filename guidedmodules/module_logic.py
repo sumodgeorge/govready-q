@@ -3,11 +3,12 @@ from itertools import groupby
 from urllib.parse import urlunparse
 
 from django.conf import settings
-from django.urls import reverse
-
 from jinja2.sandbox import SandboxedEnvironment
+
+from controls.enums.statements import StatementTypeEnum
 from controls.oscal import Catalogs, Catalog
 from siteapp.settings import GOVREADY_URL
+
 
 def get_jinja2_template_vars(template):
     from jinja2 import meta, TemplateSyntaxError
@@ -86,7 +87,6 @@ def walk_module_questions(module, callback):
 
         # Run the callback and get its state.
         state = callback(q, state, dependencies[q])
-
         # Remember the state in case we encounter it later.
         processed_questions[q.key] = dict(state) # clone
 
@@ -318,14 +318,14 @@ def oscal_context(answers):
             'uuid': e.uuid,
             'title': e.name,
             'description': e.description,
-            'state': "operational",         # TODO: OSCAL asks for individual component state
-            'type': "software"              # TODO: OSCAL components have a type
+            'state': e.component_state,
+            'type': e.component_type
         }
     components = [_component(e) for e in system.producer_elements]
 
     # collect all the control implementation statements
     statements = system.root_element.statements_consumed \
-                                    .filter(statement_type="control_implementation") \
+                                    .filter(statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value) \
                                     .order_by('sid')
 
     # and all the project's organizational parameters
@@ -380,14 +380,20 @@ def oscal_context(answers):
 
     # TODO: placeholder for information types -- should be able to pull this out
     # from questionnaire
+    security_body = project.system.get_security_impact_level
+    confidentiality =  security_body.get("security_objective_confidentiality", "UNKOWN")
+    integrity =  security_body.get("security_objective_integrity", "UNKOWN")
+    availability =  security_body.get("security_objective_availability", "UNKOWN")
 
     information_types = [
         {
+            "uuid": str(uuid.uuid4()),
             "title": "UNKNOWN information type title",
+           # "categorizations": [], # TODO https://doi.org/10.6028/NIST.SP.800-60v2r1
             "description": "information type description",
-            "confidentiality_impact": "information type confidentiality impact",
-            "integrity_impact": "information type integrity impact",
-            "availability_impact": "information type availability impact"
+            "confidentiality_impact": confidentiality,
+            "integrity_impact": integrity,
+            "availability_impact": availability
         }
     ]
 
@@ -397,19 +403,19 @@ def oscal_context(answers):
     profile = urlunparse((GOVREADY_URL.scheme, GOVREADY_URL.netloc,
                           "profile_path",
                           None, None, None))
+
     return {
         "uuid": str(uuid.uuid4()), # SSP UUID
         "make_uuid": uuid.uuid4, # so we can gen UUIDS if needed in the templates
-        "version": project.version,
+        "version": float(project.version),
         "profile": profile,
         "oscal_version": "1.0.0rc1",
         "last_modified": str(project.updated),
         "system_id": f"govready-{system.id}",
         "system_authorization_boundary": "System authorization boundary, TBD", # TODO
-        "system_information_types": information_types,
-        "system_security_impact_level_confidentiality": "UNKNOWN", # TODO
-        "system_security_impact_level_integrity": "UNKNOWN",       # TODO
-        "system_security_impact_level_availability": "UNKNOWN",    # TODO
+        "system_security_impact_level_confidentiality":confidentiality,
+        "system_security_impact_level_integrity": integrity,
+        "system_security_impact_level_availability": availability,
         "system_operating_status": "operational", # TODO: need from questionnaire, but wrong format
         "components": components,
         "implemented_requirements": implemented_requirements,
@@ -614,7 +620,7 @@ def render_content(content, answers, output_format, source,
                 varname = m.group(1)
                 expr = m.group(2)
 
-                # print("%for: expr = ", expr)
+                # print(print"%for: expr = ", expr)
                 condition_func = compile_jinja2_expression(expr)
                 if output_format == "PARSE_ONLY":
                     return value
@@ -934,7 +940,7 @@ def render_content(content, answers, output_format, source,
                         return "javascript:alert('Invalid link.');"
                     return url
 
-                import html5lib, xml.etree
+                import html5lib
                 dom = html5lib.HTMLParser().parseFragment(output)
                 for node in dom.iter():
                     if node.get("href"):
@@ -1059,13 +1065,13 @@ class HtmlAnswerRenderer:
                 # To get the correct order, get keys from question specification fields
                 for field in question.spec["fields"]:
                     value += "<th>{}</th>".format(html.escape(str(field["text"])))
-                value += "</tr>\n"
+                value += "</tr></thead>\n"
                 for item in datagrid_rows:
                     value += "<tr>"
                     # To get the correct order, get keys from question specification fields
                     for field in question.spec["fields"]:
                         value += "<td>{}</td>".format(html.escape(str(item[field["key"]])))
-                    value += "</tr>\n</thead>"
+                    value += "</tr>\n"
                 # value = html.escape(str(datagrid_rows))
                 value += "\n</table>"
             wrappertag = "div"
@@ -1540,15 +1546,34 @@ class TemplateContext(Mapping):
                 # Retrieve a Django dictionary of dictionaries object of full control catalog
 
                 from controls.oscal import Catalog
-                # Detect single control catalog from first control
                 try:
-                    catalog_key = self.module_answers.task.project.system.root_element.controls.first().oscal_catalog_key
-                    parameter_values = self.module_answers.task.project.get_parameter_values(catalog_key)
-                    sca = Catalog.GetInstance(catalog_key=catalog_key,
-                                              parameter_values=parameter_values)
-                    control_catalog = sca.flattened_controls_all_as_dict
+                    all_keys = list(set([controls.oscal_catalog_key for controls in
+                                         self.module_answers.task.project.system.root_element.controls.all()]))
                 except:
-                    control_catalog = None
+                    all_keys = []
+                # Need default if there are no control catalogs present
+                control_catalog = []
+                # If there are multiple catalogs
+                if len(all_keys) > 1:
+                    for idx, key in enumerate(all_keys):
+                    # Detect single control catalog from first control
+                        try:
+                            parameter_values = self.module_answers.task.project.get_parameter_values(key)
+
+                            sca = Catalog.GetInstance(catalog_key=key,
+                                                      parameter_values=parameter_values)
+                            control_catalog.append(sca.flattened_controls_all_as_dict_list)
+                        except:
+                            control_catalog = None
+                # If there is one catalog
+                elif len(all_keys) == 1:
+                    try:
+                        parameter_values = self.module_answers.task.project.get_parameter_values(all_keys[0])
+                        sca = Catalog.GetInstance(catalog_key=all_keys[0],
+                                                  parameter_values=parameter_values)
+                        control_catalog = sca.flattened_controls_all_as_dict
+                    except:
+                        control_catalog = None
                 return control_catalog
             if item == "system":
                 # Retrieve the system object associated with this project

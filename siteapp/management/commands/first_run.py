@@ -9,6 +9,7 @@ from django.conf import settings
 
 from guidedmodules.models import AppSource, Module
 from siteapp.models import User, Organization, Portfolio
+from controls.models import Element
 from django.contrib.auth.management.commands import createsuperuser
 
 import fs, fs.errors
@@ -33,60 +34,73 @@ class Command(BaseCommand):
             print("The database is not initialized yet.")
             sys.exit(1)
 
-        # Create AppSources that we want.
-        if os.path.exists("/mnt/q-files-host"):
-            # For our docker image.
-            AppSource.objects.get_or_create(
-                slug="host",
-                defaults={
-                    "spec": { "type": "local", "path": "/mnt/q-files-host" }
-                }
-            )
-        # Second, for 0.9.x startpack
-        # We can use forward slashes because we are storing the path in the database
-        # and the path will be applied correctly to the operating OS.
-        qfiles_path = 'q-files/vendors/govready/govready-q-files-startpack/q-files'
-        if os.path.exists(qfiles_path):
-            # For 0.9.x+.
-            AppSource.objects.get_or_create(
-                slug="govready-q-files-startpack",
-                defaults={
-                    "spec": { "type": "local", "path": qfiles_path }
-                }
-            )
-            # Load the AppSource's assessments (apps) we want
-            # We will do some hard-coding here temporarily
-            created_appsource = AppSource.objects.get(slug="govready-q-files-startpack")
-            for appname in ["System-Description-Demo", "PTA-Demo", "rules-of-behavior", "lightweight-ato"]:
-                print("Adding appname '{}' from AppSource '{}' to catalog.".format(appname, created_appsource))
-                try:
-                    appver = created_appsource.add_app_to_catalog(appname)
-                except Exception as e:
-                    raise
+        # Create the default organization.
+        if not Organization.objects.all().exists() and not Organization.objects.filter(name="main").exists():
+            org = Organization.objects.create(name="main", slug="main")
 
-        # Install default example components
-        from controls.views import ComponentImporter
-        path = 'q-files/vendors/govready/components/OSCAL'
-        import_name = "Default components"
-        if os.path.exists(path):
-            for component_file in os.listdir(path):
-                # Read component json file as text
-                if component_file.endswith(".json"):
-                    with open(os.path.join(path, component_file)) as f:
-                        oscal_component_json = f.read()
-                        result = ComponentImporter().import_components_as_json(import_name, oscal_component_json)
+        # Install default AppSources and compliance apps if no AppSources installed
+        if AppSource.objects.all().exists():
+            # Create AppSources that we want.
+            if os.path.exists("/mnt/q-files-host"):
+                # For our docker image.
+                AppSource.objects.get_or_create(
+                    slug="host",
+                    defaults={
+                        "spec": { "type": "local", "path": "/mnt/q-files-host" }
+                    }
+                )
+            # Second, for 0.9.x startpack
+            # We can use forward slashes because we are storing the path in the database
+            # and the path will be applied correctly to the operating OS.
+            qfiles_path = 'q-files/vendors/govready/govready-q-files-startpack/q-files'
+            if os.path.exists(qfiles_path):
+                # For 0.9.x+.
+                AppSource.objects.get_or_create(
+                    slug="govready-q-files-startpack",
+                    defaults={
+                        "spec": { "type": "local", "path": qfiles_path }
+                    }
+                )
+                # Load the AppSource's assessments (apps) we want
+                # We will do some hard-coding here temporarily
+                created_appsource = AppSource.objects.get(slug="govready-q-files-startpack")
+                for appname in ["blank", "speedyssp", "System-Description-Demo",
+                                "PTA-Demo", "rules-of-behavior", "lightweight-ato", "lightweight-ato-800-171"]:
+                    print("Adding appname '{}' from AppSource '{}' to catalog.".format(appname, created_appsource))
+                    try:
+                        appver = created_appsource.add_app_to_catalog(appname)
+                    except Exception as e:
+                        raise
 
-        # Finally, for authoring, create an AppSource to the stub file
-        qfiles_path = 'guidedmodules/stubs/q-files'
-        if os.path.exists(qfiles_path):
-            # For 0.9.x+.
-            AppSource.objects.get_or_create(
-                slug="govready-q-files-stubs",
-                defaults={
-                    "spec": { "type": "local", "path": qfiles_path }
-                }
-            )
-            print("Adding AppSource for authoring.")
+            # Finally, for authoring, create an AppSource to the stub file
+            qfiles_path = 'guidedmodules/stubs/q-files'
+            if os.path.exists(qfiles_path):
+                # For 0.9.x+.
+                appsource, created = AppSource.objects.get_or_create(
+                    slug="govready-q-files-stubs",
+                    defaults={
+                        "spec": { "type": "local", "path": qfiles_path }
+                    }
+                )
+                if created:
+                    print("Adding AppSource for authoring.")
+                else:
+                    print("Confirmed that AppSource for authoring exists.")
+        else:
+            print("AppSources exist. Skipping install of defaults AppSources.")
+
+        # Install default example components if no components in library
+        if len(Element.objects.all()) == 0:
+            from controls.views import ComponentImporter
+            path = 'q-files/vendors/govready/components/OSCAL'
+            import_name = "Default components"
+            if os.path.exists(path):
+                for component_file in os.listdir(path):
+                    # Read component json file as text
+                    if component_file.endswith(".json"):
+                        with open(os.path.join(path, component_file)) as f:
+                            oscal_component_json = f.read()
+                            result = ComponentImporter().import_components_as_json(import_name, oscal_component_json)
 
         # Create GovReady admin users, if specified in local/environment.json
         if len(settings.GOVREADY_ADMINS):
@@ -101,8 +115,11 @@ class Command(BaseCommand):
                         user.username,
                         user.email
                     ))
+                    # Create the first portfolio
+                    portfolio = user.create_default_portfolio_if_missing()
+                    print("Created administrator portfolio {}".format(portfolio.title))
                 else:
-                    print("\n[WARNING] Skipping create admin account '{}' - username already exists.\n".format(
+                    print("\n[INFO] Skipping create admin account '{}' - username already exists.\n".format(
                         username
                     ))
 
@@ -115,7 +132,7 @@ class Command(BaseCommand):
                 # Create an "admin" account with a random pwd and
                 # print it on stdout.
                 user = User.objects.create(username="admin", is_superuser=True, is_staff=True)
-                password = User.objects.make_random_password(length=24)
+                password = User.objects.make_random_password(length=12)
                 user.set_password(password)
                 user.save()
                 print("Created administrator account (username: {}) with password: {}".format(
@@ -129,22 +146,20 @@ class Command(BaseCommand):
             portfolio = Portfolio.objects.create(title=user.username)
             portfolio.assign_owner_permissions(user)
             print("Created administrator portfolio {}".format(portfolio.title))
-        else:
-            # One or more superusers already exist
-            print("\n[WARNING] Superuser(s) already exist, not creating default admin superuser. Did you specify 'govready_admins' in 'local/environment.json'? Are you connecting to a persistent database?\n")
 
-        # Create the default organization.
-        if not Organization.objects.all().exists() and not Organization.objects.filter(name="main").exists():
-            org, result = Organization.objects.get_or_create(name="main", slug="main")
+            # Add the user to the org's help squad and reviewers lists.
+            try:
+                user
+            except NameError:
+                print("[INFO] Admin already added to Help Squad and Reviewers")
+            else:
+                if user not in org.help_squad.all(): org.help_squad.add(user)
+                if user not in org.reviewers.all(): org.reviewers.add(user)
+                print("[INFO] Admin added to Help Squad and Reviewers")
 
-        # Add the user to the org's help squad and reviewers lists.
-        try:
-            user
-        except NameError:
-            print("[WARNING] Admin already added to Help Squad and Reviewers")
         else:
-            if user not in org.help_squad.all(): org.help_squad.add(user)
-            if user not in org.reviewers.all(): org.reviewers.add(user)
+            # One or more superusers already exists
+            print("\n[INFO] Superuser(s) already exists, not creating default admin superuser. Did you specify 'govready_admins' in 'local/environment.json'? Are you connecting to a persistent database?\n")
 
         # Provide feedback to user
         print("GovReady-Q configuration complete.")

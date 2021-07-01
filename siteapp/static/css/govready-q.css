@@ -18,7 +18,7 @@ body, blockquote {
 }
 
 #context-bar {
-  padding: 14px 0 8px 0;
+  padding: 25px 0 8px 0;
   margin-bottom: 8px;
 }
 
@@ -35,9 +35,6 @@ body, blockquote {
 
 .glyphicon-globe { color: #888; }
 
-
-
-
 h1, h2 {
   font-family: 'Lato', sans-serif;
   font-weight: bold;
@@ -50,9 +47,6 @@ h3 { font-size: 18px; }
 .btn { white-space: normal; font-size: inherit; }
 .btn.btn-sm { font-size: 12px; }
 .btn.btn-xs { font-size: 12px; }
-
-
-
 
 footer { margin-top:60px;
   font-size: .75em;
@@ -128,14 +122,14 @@ div.question-answer[data-reviewed] a { text-decoration: underline; }
 .btn-sm { width:95%; max-width:200px;  } /* this makes the action buttons all the same width.
 
 /* misc templates */
-.task-progress-project-truncate { margin: 12px 0 12px 6px; text-align: left;  }
+.task-progress-project-truncate { margin: 12px auto 12px auto; text-align: center; }
 .task-progress-project-url { color:#444; }
 .task-progress-project-group { margin: 0 0 6px 0; padding: 2px; font-size: 1.0em;text-align:left; }
 .task-progress-project-question { font-size: 10px; line-height: 120%; padding-left: 2em; color: #222; }
 .task-progress-project-title { color: black; font-size: 1.0em; text-align: left; }
 .task-progress-project-truncate-link { color: black; }
 
-.task-question-debug-links { color: #999; font-size: 80%; margin-top: 20px; }
+.task-question-debug-links { color: #999; font-size: 80%; margin-top: 20px; border:1px; solid black;}
 
 .question-source-invitation { margin-bottom: 2em; }
 .question-source-invitation-show { text-align: right; margin-bottom: -1.5em; }
@@ -166,7 +160,7 @@ div.question-answer[data-reviewed] a { text-decoration: underline; }
 .question-glyphicon-comment { color: #56A; }
 
 /* within navbar and base.html */
-.navbar-brand img { margin: -2px 20px; width:110px; }
+.navbar-brand img { margin: -1px 20px; width:160px; }
 .dropdown-menu { width: 300px; }
 .nav-dropdown-item-text { margin: 0px 12px 8px 20px; }
 .nav-profile { margin: -5px 5px; }
@@ -200,7 +194,6 @@ a.glyphicon-home-icon { color: black; margin-right: .25em; text-decoration:none;
 
 .control-label { font-size:.8em;} /* within modal, the word description was breaking */
 
-
 /* app-store-item */
 .breadcrumb-link { color: black; }
 .app-header { max-width:968px; margin: auto; padding-top: 30px;}
@@ -216,6 +209,11 @@ a.glyphicon-home-icon { color: black; margin-right: .25em; text-decoration:none;
 .app-info-height { height: 24px; }
 .app-bottom-spacer { height:40px; }
 
+/* search */
+#searchbox { padding-left:28px; }
+#searchclear { position: absolute; right: 5px; top: 0; bottom: 0; height: 14px; margin: auto; font-size: 14px; cursor: pointer; color: #ccc; text-decoration: none; }
+#searchicon { position: absolute; left: 8px; top: 0; bottom: 0; height: 14px; margin: auto; font-size: 14px; cursor: default; color: #999; text-decoration: none; }
+
 /* project */
 /* leaving display tags within the html to prevent issues */
 
@@ -227,7 +225,7 @@ a.glyphicon-home-icon { color: black; margin-right: .25em; text-decoration:none;
 
 .project-row-style { margin-bottom:1em; }
 .action-row { margin-bottom: 1em; }
-.project-body-block { margin-top: 1em; }
+.project-body-block {}
 
 .project-text { margin: 1em 0; }
 .project-glyphicon-ok { color: #96B; } /* this is not good */
@@ -256,6 +254,7 @@ a.glyphicon-home-icon { color: black; margin-right: .25em; text-decoration:none;
 
 .project-main { float: right; margin: 0 0.5em 0em 5em; }
 .project-top { margin-top: 15px; }
+.project-image { width: 20px; float: left; margin: 4px 0 5px 8px; }
 
 .project-list-text { font-size: 90%; font-weight: 400; margin: 2em 0 .5em -2px; }
 .project-list-text-item { color: #666; }
@@ -294,6 +293,23 @@ a#delete-import.btn {float: right; margin-top: 1em;}
 
 form #id_json_content { width: 100%; overflow: auto !important; } /* The !important is to fix a bug with textareas not allowing scrolling. */
 
+.component-tag { font-size: 0.7em; color: #999; padding: 0px 6px 0px 6px; border: 1px solid #bbb; border-radius: 24px; }
+.component-tag a { color: #999; }
+.component-state { font-size: 0.8em; color: #444; padding: 0px 6px 0px 6px; border: 1px solid #bbb; border-radius: 24px; }
+.component-type { font-size: 0.8em; color: #444; padding: 0px 6px 0px 6px; border: 1px solid #bbb; border-radius: 24px; }
+
+.component-form {
+ float: left;
+}
+
+details summary { cursor: pointer; }
+details summary > * { display: inline; }
+
+#common-tab-count, #component-tab-count { display: inline-block; color: #666; background-color: #dedede; border-radius: 20px; line-height: 1; padding: 2px 6px; font-size: 0.8em; font-weight: 600; }
+.component-control-description { white-space: pre-wrap; max-height: 200px !important;overflow-y: scroll; }
+#component-detail-content { border-left:1px solid #ccc; border-right:1px solid #ccc; border-bottom:1px solid #ccc; border-radius: 0; padding: 0 0 8px 12px; }
+/*details > summary::before { content: '▶'; }*/
+/*details[open] > summary::before { content: '▼'; }*/
 
 /* Import Form fields */
 form #id_appsource_version_id { width: 100%; overflow: auto !important; }
@@ -328,13 +344,14 @@ form #id_appsource_compapp { width: 100%; overflow: auto !important; }
 
 /* MISC */
 .love-assessments { max-width: 650px; }
+.pagination a { color: rgb(88, 144, 191); }
 
 /* systems */
 .systems-top { margin-top: 30px; }
 .systems-title { float: left;}
 .systems-link { color: black; }
 .systems-control-lookup { float: right; }
-.systems-selected-components { font-size: 14pt; font-weight: bold;}
+.systems-selected-items { font-size: 14pt; font-weight: bold;}
 .systems-control-heading { float: left; padding: 0 0 0 0em; }
 .systems-smt-list { width: 90%; }
 
@@ -348,4 +365,107 @@ form #id_appsource_compapp { width: 100%; overflow: auto !important; }
 
 .systems-element-name { font-size: 14pt; font-weight: bold;}
 .systems-poam { margin-top: 4px; }
-.systems-poam-glyphicon {  margin-top: 6px; }
+.systems-poam-glyphicon { margin-top: 6px; }
+.systems-control-catalog { font-size: 0.65em; color:#aaa; border:1px solid #aaa; border-radius: 12px; padding:0px 8px 0px 8px; }
+
+.pagination {
+  white-space: nowrap;
+}
+
+.statement-column-headings {
+    background-color: #ddd;
+    margin: 0px 12px 12px 2px;
+    padding: 4px 4px 4px 0px;
+    font-weight: bold;
+  }
+
+.statement-text-block {
+    border-left: 1px solid #ccc;
+    white-space: pre-line;
+  }
+
+.remark-text-block {
+    white-space: pre-line;
+  }
+
+.statement-edit-text-block {
+    border-left: 1px solid #ccc;
+    background-color: rgb(253, 253, 253);
+    padding-bottom: 8px;
+    margin-top: -20px;
+  }
+
+/* displays OSCAL in a scrolling div */
+  .display-oscal {
+    overflow: scroll;
+    height:500px;
+    word-wrap: break-word;
+    display:block;
+    margin: 2em;
+    padding: 1em;
+    border:1px solid #D9D9D9;
+    overflow-wrap: break-word;
+    width: 95%;
+    -webkit-user-select: all;  /* Chrome all / Safari all */
+      -moz-user-select: all;     /* Firefox all */
+      -ms-user-select: all;      /* IE 10+ */
+      user-select: all;          /* Likely future */
+  }
+
+
+  /* this keeps buttons from being too big */
+  .btn { font-size: 12px;}
+  .btn-app-sm { font-size:12px;}
+  .btn { white-space: normal; }
+  .btn.btn-sm { font-size: 12px; }
+  .btn.btn-xs { font-size: .8em; }
+  .project-button-finished { color: #1A1A1A; }
+
+  /* misc tweaks */
+.navbar .notification.unread a span { font-weight: bold; }
+.glyphicon-globe { color: #888; }
+.portfolio-glyphicons { font-size: 8em; color: #D9D9D9; }
+.modal-body select  { padding:3px; }
+
+#component-detail-content { background:#ffffff; }
+
+.row-control { background:#ffffff;}
+
+/* this is a temporary solution for the navbar being too wide before collapsing to a hamburger. Now it will collapse at 1102px instead of 768px. */
+@media (max-width: 1102px) {
+    .navbar-header {
+        float: none;
+    }
+    .navbar-toggle {
+        display: block;
+    }
+    .navbar-collapse {
+        border-top: 1px solid transparent;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.1);
+    }
+    .navbar-collapse.collapse {
+        display: none!important;
+    }
+    .navbar-nav {
+        float: none!important;
+        margin: 7.5px -15px;
+    }
+    .navbar-nav>li {
+        float: none;
+    }
+    .navbar-nav>li>a {
+        padding-top: 10px;
+        padding-bottom: 10px;
+    }
+    .navbar-text {
+        float: none;
+        margin: 15px 0;
+    }
+    /* since 3.1.0 */
+    .navbar-collapse.collapse.in {
+        display: block!important;
+    }
+    .collapsing {
+        overflow: hidden!important;
+    }
+}

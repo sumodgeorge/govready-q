@@ -1,18 +1,454 @@
 GovReady-Q Release Notes
 ========================
 
-v999 (February XX, 2021)
-------------------------
+v999 (June XX, 2021)
+---------------------
 
 **Developer changes**
 
-* Avoid name collissions when cloning a component.
 * Add controls.models.Statement.delegate field to allow statements to delegate their content to other statements. This supports controls from one catalog to be mapped to controls in another catalog. A statement must exist for each delegate. One control delegating to 3 controls in another catalog must do that through 3 statements.
+
+v0.9.5 (June 23, 2021)
+----------------------
+
+**Feature changes**
+
+* Add full text search of component statements in component library search.
+* Add tab to component library component detail page to display list of systems containing the component.
+
+**UI changes**
+
+* Add "Import AppSource" button for admins in Compliance App store to simplify end-users adding AppSource.
+* Link to library version of component from a system's selected control component listing and selected components.
+
+
+v0.9.4 (June 13, 2021)
+----------------------
+
+**Data changes**
+
+* Require components to have descriptions.
+* Adding component_state and component_type fields to an `Element` to contain a component's state and type.
+* Created a modal to allow an admin user to add security objectives confidentiality, integrity, and availability.
+* Add field to identify user's default portfolio.
+
+**UI changes**
+
+* Can now edit a system componet's state and type in the detail page for a selected component.
+* Improve project pages appearance: decrease action button width and left align text; widen from 9 to 10 columns main content.
+* Remove "Refresh Documents" button on task finished page because caches are now automatically cleared and document content refreshed.
+* Display system component component_state and component_type when component is listed for a system.
+* Add simple "back" link to question to take user to previous question.
+* Add "Create a template" button to template library so admins can create a new template (e.g., compliance app).
+* Add option to compare components in component library.
+* Remove portfolio selection modal from Start a Project process. Assign new projects to user's default portfolio.
+* Remove specifying user default portfolio during registration process.
+
+**Developer changes**
+
+* Add management command `exportcomponentlibrary` to batch export components from library as OSCAL or CSV.
+* Add management command `importcomponents` to batch import OSCAL components to library.
+* Add `existing_import_record` to importing and creating components to group multiple imports under the same import record.
+* Improve generation of components in OSCAL model by removing certain keys when values are none as per specification.
+* Task caches are now automatically cleared and document content refreshed when document downloaded.
+* Add test for system control page.
+* Refactor creating system control statements from component library prototype statements when adding a component from the library to a system and reduce by an order a magnitude the time it takes to add a component to system.
+* Create System method to batch update an element's control implementation statements based on the component's state.
+* Always display OSCAL tab in component library for component detail (rather than conditional on 'enable_experimental_opencontrol' parameter).
+* Add method controls.element.consuming_systems to produce list of systems consuming (e.g., containing) the element.
+
+**Deployment changes**
+
+* The HTTP Content-Security-Policy header is now set to allow browsers to load third-party videos from YouTube.com, Vimeo.com and images from any source.
+
+**Bug fix**
+
+* Fix OSCAL SSP output template failure where statement didn't exist while exporting to OSCAL.
+* Fix bug breaking rendering of system's control detail page by removing an errant login_required decorator on a function.
+* File upload validator now accepts files with capitalized extensions, e.g. ".JPG".
+* File upload validator now recognizes ".jpeg" in addition to ".jpg" extension on JPEG files.
+
+v0.9.3.5.3 (May 16, 2021)
+-------------------------
+
+**Bug fixes**
+
+* Fix session timeout handler showing 500 error when returning to app after timeout by adding in @login_required decorator to various views that expect user identity.
+
+* Fix multiple copies of component being returned on search by adding `.distinct()` to end of Django search query.
+
+* Fix high number of controls statements (trying) to added on action by filtering statements to type control_implemention_prototype.
+
+* Have page reload after adding control statement to a component in the library to avoid non-feedback to user and user having to refresh the page.
+
+**Security changes**
+
+* Upgrade to Django 3.2.3 to correct for Snyk indicated vulnerability in Django 3.1.8 https://snyk.io/vuln/SNYK-PYTHON-DJANGO-1279042
+
+**Developer changers**
+
+* Remove documentation-related m2r and sphinx related packages from requirements.in.
+
+v0.9.3.5.2 (May 2, 2021)
+------------------------
+
+**Bug fixes**
+
+* Restore css style for component count accidentally deleted.
+
+v0.9.3.5.1 (May 1, 2021)
+------------------------
+
+**Bug fixes**
+
+* Fix "missing key" error for `SESSION_SECURITY...` params in `settings.py` when realed environment parameters not defined.
+
+v0.9.3.5 (April 28, 2021)
+-------------------------
+
+**UI changes**
+
+* Rearrange Create | Import | Manage component buttons; put "Manage Import Records" button last.
+
+* Add links for "forgot password" and "change password".
+
+* Add control titles to component control listing pages.
+
+* Display control catalog guidance text in `details` tag next to component control implementation statements.
+
+* Add control titles to component control listing pages.
+
+* Better notify users when project implementation statement differs from certified by displaying notice in third column of control detail pages.
+
+* Improve language notifying users that project implementation statement differs from certified. Only difference notice is clickable now.
+
+* Search component library by tag content and make component tags clickable.
+
+**Bug fixes**
+
+* Immediately assign change project perms to user starting project and fix issue that non-admin users were not executing modifications to a project the user started such as setting baseline controls.
+
+* Properly filter system POA&M stat to only count POA&Ms for system.
+
+* Provide better error reporting on import component schema validation; report actual validation error to standout.
+
+* Fix N+1 slow display of component control statements with many statements.
+
+**Developer changes**
+
+* Update stub_app used by compliance_app command for generating compliance app to include "input" and "output" section; and to have folders for templates, utils, and components.
+
+* Developers can now use `docker` & `docker-compose` to deploy a local environment.  This allows devs to work on any Operating System.  Instructions can be found at `dev_env/README.md` folder.
+
+* Set system fisma_impact_level as part of question action to set baseline. Also add fisma_impact_level set/get methods to System model.
+
+* Display system impact level on project page.
+
+* Introduce django-session-security package to allow for setting session time out and alert.
+
+**Data changes**
+
+* Use statement type `fisma_impact_level` to track impact level of a system.
+* Add input_type to AppInputs in order to make selections of input files based on type. This will support importing POA&Ms as part of loading and the starting an app.
+
+v0.9.3.4 (April 20, 2021)
+-------------------------
+
+**Developer changes**
+
+* Add ability for external catalogs and baselines to be used in GovReady-q projects through the two functions `extend_external_baselines` and `extend_external_catalogs`. This includes two new paths GovReady-q looks at which are EXTERNAL_BASELINE_PATH and EXTERNAL_CATALOG_PATH `~/govready-q/local/controls/data/<baselines/catalogs>`
+
+* Added a `list_catalogs()` method to `Catalog` in order to easily get the `Catalog` objects in a list.
+
+* Allow moving projects between portfolios only by users with appropriate permissions.
+
+* Introducing profiling with nplusone to assist in preventing N+1 views.
+
+**Bug fixes**
+
+* Fixed some issues in code resulting in excessive SQL calls slowing down the application
+
+**UI changes**
+
+* Link mini-dashboards on project page to sensible related pages.
+
+* Improved messaging for the move_project function when user does not have the correct permissions.
+
+v0.9.3.3 (April 13, 2021)
+-------------------------
+
+**Feature changes**
+
+* Added support for Remote Interpreter on IDEs for the local Docker deployment.
+
+**UI changes**
+
+* Add "Help" link to global navbar.
+* Remove caret glyphicons from global navbar.
+* Make conditional admin "Settings" link in global navbar a dropdown menu to include link to Django database admin.
+* Simplify task-finished page layout. Move navigation buttons to top.
+* Replace "...and we're done" language with "Module Summary".
+* Replace questions progress sidebar's project links with more obvious project buttons.
+* Display all summary values of a SAR result for each inventory item.
+
+**Developer changes**
+
+* Add `tools/simple_sar_server/wazuh_etl.py` to support Wazuh SCA results in SAR pipeline.
+
+**Bug fixes**
+
+* User now has the ability to edit uploaded files via the admin panel.
+* File names now updated properly for all Asset models in the event of an update.
+* Added a short README.md to each `modules/systems` folder (account, organization) to avoid seeing the README error when loading modules.
+
+**Developer changes**
+* (fields.W903) NullBooleanField is deprecated. Support for it (except in historical migrations) will be removed in Django 4.0. Using BooleanField instead for `siteapp.Project.is_organization_project` and `guidedmodules.AppVersion.system_app`.
+* Added version data for the project and the project's compliance app to the exported project json.
+
+**Install fixes**
+
+* Create portfolios for admins when passing in ADMIN setting for automated admin creation during install first-run.
+* Create default org 'main' if none exists earlier in the first-run process.
+* Fix adding admin user to Help Squad and Reviewers list.
+* Install default AppSources and compliance apps only if no AppSources installed.
+
+
+v0.9.3.2 (April 1st, 2021)
+--------------------------
+
+* Added sitename model, separated content (splash.html) on index page from index.html and footer.html as well for branding purposes. Removed erroneous tags and cleaned up some CSS. Breadcrumb (context-bar) is hidden on index page now.
+
+
+**UI changes**
+
+* Filter System Asessment Result Deployment dropdown to only display System's deployments.
+
+**UI changes**
+
+* Polish SAR summary page: add action buttons, use details tag, other improvements.
+* Polish SAR list page: include deployment name.
+* Polish Deployment inventory detail page.
+
+**Developer changes**
+
+* Create `tools/simple_sar_server/sar.py` to generate synthetic System Assessment Results (summary) data for testing the assessment pages.
+* Create `tools/simple_sar_server/sar_etl.py` as example middleware to transform a SAR to a format GovReady-Q can interpret.
+* Display assessment name in Assessment model admin list.
+
+**Data changes**
+
+* Update SAR test data.
+
+**Bug fixes**
+
+
+* Change database settings to close connections after each request and set all transactions to atomic by default.
+
+* Make sure new users are granted `view app source` permission when user account created via SSO proxy.
+
+
+v0.9.3.1 (March 23, 2021)
+-------------------------
+
+**Feature changes**
+
+* Re-assign system's baseline to different baseline; dynamically batch add and removes controls to change a system's existing baseline to a different baseline (e.g. from moderate to low)
+* Enable questionnaire question to process question system actions to set system baseline (e.g., selected controls).
+* Enable questionnaire question to process question system actions to set project title and system name.
+* Support "actions" functionality associated with question answers.
+* Support assigning "roles" to elements.
+* Use new "actions" and "roles" functionality to enable question answers to add/delete components from selected components of a system.
+
+**UI changes**
+
+* Rename "App Library" to "Template Library" in nav bar.
+* Add "Project Home" button to action button ribbon.
+* Top of action button ribbon button order now: "Project Home", "Controls", "Components".
+
+**Developer changes**
+
+* Add processing for question actions targeted at system to handle `system/assign_baseline/<value>` to assign baseline set of controls to a system.
+* Add processing for question actions targeted at system to handle `system/update_system_and_project_name/<value>` to set system name and project title.
+* Add "actions" to Compliance App questions (e.g., tasks) that are conditionally performed based on question answer(s).
+* Add "roles" to identify, organize, and process system elements (e.g., components)
+
+The add action capability is supported by new `actions` item within each defined question.
+
+Actions take the form:
+
+```
+  actions:
+    - value: <answer_value>
+      action: <object>/<verb>/<filter>
+      comment: <comment>
+```
+
+Example actions:
+
+```
+  actions:
+    - value: adfs
+      action: element/add_role/ADFS
+      comment: Add elements assigned AFDS to selected components
+    - value: adfs
+      action: element/del_role/Azure Active Directory
+      comment: Delete elements assigned Azure Active Directory from selected components
+```
+
+The following actions are currently supported:
+
+1. `system/assign_baseline/<value>` - Automatically sets the system baseline controls to the selected impact
+2. `system/update_system_and_project_name/<value>` - Automatically sets the system, project names
+3. `element/add_role/<role_value>` - Automatically add elements to the selected components of a system
+4. `element/del_role/<role_value>` - Automatically delete elements from the selected components of a system
+
+- Actions are (currently) performed as part of the processing question answer in guidedmodules, before going to next question.
+- Actions should be idempotent.
+- Actions almost never re-direct user out of the questionnaire.
+- Actions need to be reversible. When a user changes an answer previous action should be undone or modified accordingly.
+
+We connect actions defined in the portable compliance app to GovReady-Q instance data via "roles" dynamically assigned to target objects.
+In the initially supported use case, Elements can be assiged Roles via new `ElementRole` model.
+The new `ElementRole` model assigns roles to system elements via a Many-to-Many relationship.
+ElementRoles and associating Elements to roles is currently be done in Django admin interface.
+
+Roles provide a level of abstraction between an action defined in compliance app and actual objects dynamically assign that role.
+
+ElementRoles also enables categorizing, organizing, filtering, and creating checks around Elements. An example roles might be "internal-only" to make allow checks to be added to prevent accidental disclore.
+
+ElementsRoles differ from more generic tags because the setting of roles should be limited to privileged users and have specific organizational purpose.
+
+Current limitations:
+- No tests.
+- ElementRoles and Element assignment to roles must be done in Djang admin interface.
+- Adding component is done through questionnaire, but if component deleted question does not yet know or update. Need to be able to clear question.
+- No handling yet of marking a question unanswered.
+- No logging yet of action result to question history.
+- Code needs optimization and DRY-ness.
+- Roles need to be created manually in the GovReady-Q instance for a compliance app using actions with roles. In the future, when a compliance app is loaded the roles could be created automically. An privileged would still need to assign local elements to roles.
+
+**UI changes**
+
+* Provide messaging feedback when answering a question triggers an action.
+
+**Data changes**
+
+* Added speedysp to q-files' govready-q-files-startpack to demonstrate how fast an SSP can be made.
+
+**Install changes**
+
+* Rename installed sample project to clearly indicate project is sample data.
+
+v0.9.3.0rc1 (March 16, 2021)
+----------------------------
+
+New, better install process written in Python.
+Include all required static files `siteapp/static` directory as part of GovReady-Q distribution.
+
+**Feature changes**
+
+* Add and delete controls from a system's selected controls.
+
+**UI changes**
+
+* Update 3-column statement layout's "edit" into a glyphicon pencil pulled all the way right, remove extra lines and other small changes.
+* Update 3-column statement layout to include column headings.
+* Conditionally display remarks in component library using HTML details tag.
+* Display tags associated with components (components must currently be set in Django admin.)
+
+New, better install process written in Python.
+Include all required static files pre-collected in `static_root` directory as part of GovReady-Q distribution.
+* Style searchbox on component library and component library detail page to use search glyphicon to indicate search and remove glyphicon within search box to clear search results.
+* Separate user home page (e.g., "/") page from `/project` page to provide a better first use and login experience.
+* Display number of projects and portfolios on the new user home page.
+* Add delete trash icon to selected control list for users with permission to change system. Include a pop-up confirmation dialog.
+* Add popup conformation dialog box for deleting components from system's selected components.
+* Add autocomplete select box for adding controls to systems's selected controls page.
+
+**Developer changes**
+
+* New, better install process written in Python.
+* Include all required static files pre-collected in `static_root` directory as part of GovReady-Q distribution.
+* Replace shell script install script `install-govready-q.sh` with better Python install script `install.py`.
+* Now including all static files pre-collected as part of distribution.
+* Added tag models, views, urls, migrations for reusability. First model to get tags is Controls.models.Element.
+* Adds Snyk Security Scans to CircleCi scanned items include python requirements files requirements.txt, requirements_util.txt, and requirements_mysql.txt.
+
+**Bug fixes**
+
+* Properly populate previously blank "Start project" modal that appeared on component library, component library detail, and some other pages.
+
+v0.9.2.2 (March 10, 2021)
+-------------------------
+
+**Developer changes**
+
+* Ensure that the number of controls selected for a project reflect non-duplicate counts of that control.
+* Updates to how SSP generation works. Passing in a yaml file to provide metadata for title page. Updated docx template. Revisions to the 800-171 markdown template to remove colspans and support display of title page, toc, etc in DOCX. Edits to associated yaml file as well.
+
+**UI changes**
+* removed display of export options ("plain text", "markdown"), leaving docx and html.
+
+**Bug changes**
+
+* Fix Postgres crash error by setting the ProjectAsset Model content hash length to 128 characters.
+* Find the correct number of panels by adding implementation statement number when adding a statement to a component in the library.
+
+
+v0.9.2.1 (March 05, 2021)
+-------------------------
+
+**UI changes**
+
+* Improve style sheets for 3 column layout.
+
+**Developer changes**
+
+* Adjust Python libraries to support Python 3.6 to 3.9 and improve dependency license tracking comments.
+
+**Bug changes**
+
+* Fixed display of tabular data from data grid questions in questionnaire output documents including generated SSPs.
+
+v0.9.2 (March 1, 2021)
+------------------------
+
+**Feature changes**
+
+* Remove a component and its statements from a system.
+* Implemented improved, 3 column editing page UI
+* Search/filter components feature added to component library (and for system control implementation page).
+* Support multiple reference-documents for generating Word version of SSP and other artififacts.
+
+**UI changes**
+
+* Added a button to system selected component page to remove a component from the system.
+* Moved "Add a component" to a system drop down to top of selected component page.
+* Added a search text box for each searching of components in the library and their statements.
+* Added pagnation to the component library and their statements.
+* Added a reset button for explicit resetting of component search.
+* Update component control statement editor layout with 3 column layout to make reading control implementation statements easier.
+
+**Developer changes**
+
+* Move inclusion of `edit-component-modal.html` from `base.html` to `components/element_detail_tabs.html`.
+* Fix sort control order in `component_library_component` on the `components/element_detail_tabs.html` using the `natsort` package to sort SID correctly.
+* Comment out `controls.models.ElementControl.get_controls_by_element` method because it is not being used. Will delete after a few releases if not needed.
+* Created a ElementEditForm Django form in conjunction with some functional changes to avoid name collisions issues with component library.
+>>>>>>> develop
 
 **Data changes**
 
 * Alter Element description field to be blank and none.
+* Migration to lengthen django.contrib.auth.User.first_name field to 150 characters (change happened during an upgrade of Django and/or libraries).
 
+**Bug changes**
+
+<<<<<<< HEAD
+=======
+* Fixed how control id, title, and catalog key are retrieved for component library components.
+
+>>>>>>> develop
 v0.9.1.52 (February 16, 2021)
 -----------------------------
 
@@ -24,28 +460,30 @@ Project page displays mini-dashboard of compliance stats.
 
 * Add System Assessment Report tracking to associate assessments and evidence with the system.
 * Add initial dynamic status information to the project page.
+* Use default catalog parameters to set default control catalog and baseline.
 
 **UI changes**
 
-* Improve page load times for listings with pagination and ordering for project listing and selected component listing. 
+* Improve page load times for listings with pagination and ordering for project listing and selected component listing.
 * Display projects in pages of 10 and selected components by 5.
 * Project page displays mini-dashboard of compliance stats.
     * Number of controls implemented out of count of controls.
     * Number of POA&Ms.
     * Count of system components.
     * Approximate overall compliance based on controls implemented / count of controls.
+* Project mini-dashboard now reports controls "addressed" instead of implemented and "% compliance (unassessed)" which uses the number of controls that have at least one statement. This is more accurate representation than saying definitely which control has been assessed as implemented. Will show that in future dashboard items.
 
 **Developer changes**
 
 * Properly restrict statement history access to users with system, staff, or admin permissions.
 * Avoid name collisions when cloning a component.
 * Replaced function-based views with class-based listview for SelectedComponentsList, ProjectList.
-* Avoid name collisions when cloning a component.
 * Default to not use Django Debug Toolbar. Added new `enable_tool_bar` parameter option for `local/environment.json` to allow users to enable(True) or disable(False) the Django Debug Toolbar.
 * Adding DummyCache to prevent real caching while running automated tests.
 * Refactored use of random package to use secure secrets module.
 * Added minor pylint fixes.
 * Added the ability to import and export Poams along with the project import/export.
+* GovReady will now read compliance app catalog.parameters.catalog_key and catalog.parameters.baseline values to set the selected controls for a system.
 * Load sample/default components into component library during installation to provide users with starting set of components.
 
 v0.9.1.51 (February 03, 2021)
@@ -410,7 +848,7 @@ v.0.9.1.47 (December 01, 2020)
 * Fix system_settings methods enable_experimental_oscal and enable_experimental_opencontrol to work properly.
 
 v0.9.1.46.4 (November 25, 2020)
------------------------------	
+-----------------------------
 
 **UI changes**
 

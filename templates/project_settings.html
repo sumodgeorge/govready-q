@@ -146,6 +146,9 @@ h3.question-group-title {
 {% block action_buttons %}
   <div class="btn-group" role="group" aria-label="action buttons group">
     {% if project.system is not None %}
+      <button id="btn-project-home" class="btn btn-sm btn-default" onclick="window.location = '{{ project.get_absolute_url }}';">
+        <em class="glyphicon glyphicon-home"></em> Project Home</a>
+      </button>
       <button class="btn btn-sm btn-default" onclick="window.location = '/systems/{{project.system.id}}/controls/selected';">
         <em class="glyphicon glyphicon-book"></em> Controls</a>
       </button>
@@ -283,6 +286,7 @@ h3.question-group-title {
           </div>
           <div class="row project-settings-row">
             <div class="col-sm-3"><small><span class="text-muted">App Version:</span><br>{{project.root_task.module.app.version_number|safe}}</small></div>
+            <div class="col-sm-3"><small><span class="text-muted">Project Version Comment:</span><br>{{project.version_comment|safe}}</small></div>
           </div>
         </div>
 
@@ -404,12 +408,12 @@ h3.question-group-title {
           </div>
           {% endif %}
 
-        <div class="row project-settings-rows>
+        <div class="row project-settings-rows">
           <div class="col-sm-12">
             <h2 class="project-settings-header">Share Data</h2>
           </div>
           <div class="col-sm-12">
-            {# export #}
+              {# export #}
               <form method="post" action="{% url "export_project_questionnaire" project.id %}" style="display: inline-block; margin: 0; padding: 0;">{% csrf_token %}
                 <button class="btn btn-default">
                   <span class="glyphicon glyphicon-share" style="margin-right: .25em"></span>
@@ -426,8 +430,8 @@ h3.question-group-title {
                   style="width: auto; border:  none; padding: 0; display: inline-block"
                   onchange="$('#import-form').submit()" />
               </form>
-            </div>
           </div>
+        </div>
 
       {% if project.is_deletable and is_admin %}
         <div class="row project-settings-rows">
@@ -528,24 +532,6 @@ function set_state_from_url_fragment() {
   }
 }
 
-function rename_project() {
-  // Allow setting the title to the empty string, which clears the override if set.
-  // If the user is renaming it to what we already have, or cancelled the dialog,
-  // then ignore the change.
-  var new_title = prompt("Rename this project?", "{{project.title|escapejs}}");
-  if (new_title === null || new_title == "{{project.title|escapejs}}") return;
-  ajax_with_indicator({
-   url: '{% url "rename_project" project.id %}',
-   method: "POST",
-   data: {
-    title: new_title
-   },
-   keep_indicator_forever: true, // keep the ajax indicator up forever --- it'll go away when we issue the reload
-   success: function() {
-     window.location.reload();
-   }
-  });
-}
 
 function upgrade_project(version_number) {
   show_modal_confirm(

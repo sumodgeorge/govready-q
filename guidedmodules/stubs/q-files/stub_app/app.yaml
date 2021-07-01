@@ -22,3 +22,5 @@ questions:
     title: Example Module
     type: module
     module-id: example
+input: []
+output: []

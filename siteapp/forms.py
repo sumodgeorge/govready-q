@@ -5,7 +5,14 @@ from django.db.models import Exists
 
 from .models import Portfolio, Project
 
-class ProjectForm(ModelForm):
+class EditProjectForm(ModelForm):
+    class Meta:
+        model = Project
+        fields = ['root_task']
+        project_title = forms.CharField(label='Project Title', max_length=200)
+        project_version = forms.CharField(label='Project Version', max_length=200)
+
+class AddProjectForm(ModelForm):
     class Meta:
         model = Project
         fields = ['portfolio']
@@ -13,9 +20,8 @@ class ProjectForm(ModelForm):
         user1 = forms.ChoiceField(choices = [])
 
     def __init__(self, user, *args, **kwargs):
-        super(ProjectForm, self).__init__(*args, **kwargs)
+        super(AddProjectForm, self).__init__(*args, **kwargs)
         if not user.is_anonymous:
-            # self.fields['portfolio'].choices = [(x.pk, x.title) for x in Portfolio.get_all_readable_by(user).order_by('title')]
             self.fields['portfolio'].choices = [(x.pk, x.title) for x in user.portfolio_list().order_by('title')]
             self.fields['portfolio'].label = "Add project to portfolio"
             self.fields['portfolio'].label_suffix = "    "
@@ -34,20 +40,3 @@ class PortfolioForm(ModelForm):
         if Portfolio.objects.filter(title__iexact=cd['title']).exists() and self.data.get('action') == 'newportfolio':
             raise ValidationError("Portfolio name {} not available.".format(cd['title']))
         return cd
-
-class PortfolioSignupForm(ModelForm):
-
-    class Meta:
-        model = Portfolio
-        fields = ['title']
-
-        labels = {
-            "title": "Your personal portfolio will be:",
-        }
-        help_texts = {
-            "title": "Only lowercase letters, digits, and dashes.",
-        }
-        widgets = {
-            "description": forms.HiddenInput(),
-            "title": forms.TextInput(attrs={"placeholder": "username"})
-        }

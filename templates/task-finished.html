@@ -1,6 +1,7 @@
 {% extends "task-base.html" %}
 {% load static %}
 {% load q %}
+{% load bootstrap3 %}
 
 {% block title %}
 {{m.title}}
@@ -35,6 +36,16 @@
     margin-bottom: 30px;
   }
 
+  @media (min-width: 768px) {
+  .modal-xl {
+    width: 90%;
+    max-width:1200px;
+     }
+  }
+  .radiotext {
+    margin: 10px 10px 0 0;
+  }
+
 </style>
 {% endblock %}
 
@@ -43,7 +54,7 @@
 
 <div class="row">
   <div id="focus-area-wrapper" class="col-xs-12 col-sm-12 col-md-9 col-lg-8">
-    <h1 class="task-done">...and we&rsquo;re done</h1>
+    <h1 class="task-done">Module Summary</h1>
     {% if top_of_page_output %}
       <div class="task-bottom-margin">
         {{top_of_page_output.html|safe}}
@@ -53,10 +64,70 @@
         {% if previous_page_type == "project" %}
           <p>This module was last updated on {{task.updated|date}}.</p>
         {% elif previous_page_type == "nquestion" %}
-          <p>You have completed the module.</p>
+          <p>You've reached the end of the {{ task.title}} module.</p>
         {% endif %}
       </div>
     {% endif %}
+
+      {% with answers_question=task.is_answer_to_unique %}
+        {% if answers_question and answers_question.task.editor == request.user %}
+          {% if task.project.is_account_project %}
+            {# there is nothing else in the account settings project #}
+            <p><a id="return-to-projects" href="/projects" class="btn btn-success">
+              Return to Projects &raquo;
+            </a></p>
+          {% else %}
+            {% if answers_question.task == answers_question.task.project.root_task %}
+              {# return to project #}
+              <p>
+                {# Show this form when we successfully determine next question #}
+                {% if next_module_spec %}
+                  {# Start a task directly using the module type in the specification. #}
+                  {% if not next_module_spec.protocol %}
+                  <form class="start-task" method="post" action="/tasks/start"
+                        onclick="$(this).submit();" style="cursor: pointer">
+                        {% csrf_token %}
+                        <input type="hidden" name="project" value="{{task.project.id}}"/>
+                        <input type="hidden" name="question" value="{{next_module_spec.id}}"/>
+                        <input type="hidden" name="previous" value="project"/>
+                    {% else %}
+                      {# Go to the Apps Catalog to select an app that implements the protocol specified on the question. #}
+                      <form method="get" action="{% url 'store' %}"
+                        onclick="$(this).submit();" style="cursor: pointer">
+                        <input type="hidden" name="q" value="{{task.project.root_task.id}}/{{next_module_spec.id}}">
+                    {% endif %}
+                    <div class="btn btn-success">Continue to {{next_module_spec.title}} &raquo;</div>
+                  </form>
+                  <br>
+                {% endif %}
+              </p>
+            {% else %}
+              {# return to non-project parent task #}
+              <p><a id="return-to-supertask" href="{{answers_question.task.get_absolute_url}}" class="btn btn-success">
+                Continue Answering {{answers_question.task.title}} &raquo;
+              </a></p>
+            {% endif %}
+            {# TODO: Does module-set work correctly? #}
+            {% if answers_question.question.spec.type == "module-set" %}
+              <form method="post" action="/tasks/start" style="display:inline;">
+                {% csrf_token %}
+                <input type="hidden" name="project" value="{{task.project.id}}"/>
+                <input type="hidden" name="question" value="{{answers_question.question.key}}"/>
+                <input type="hidden" name="previous" value="task"/>
+                <a href="#" onclick="$(this).parent('form').submit(); return false;" class="btn btn-success" title="Add Another {{answers_question.question.answer_type_module.title}} to {{answers_question.question.spec.title}}.">
+                  Start New {{answers_question.question.answer_type_module.title}} &raquo;
+                </a>
+              </form>
+            {% endif %}
+          {% endif %}
+        {% else %}
+          {# every task, except projects, are now subtasks of other tasks, so this only occurs if a task is a subtask to multiple super-tasks #}
+          <p><a href="{{task.project.get_absolute_url}}" class="btn btn-success">
+           {# we used to say 'with other modules in {{task.project.title}}' but there may not be any other modules #}
+            Continue &raquo;
+          </a></p>
+        {% endif %}
+      {% endwith %}
 
     <div id="accordion" class="panel-group" role="tablist" aria-multiselectable="true">
       {# output documents #}
@@ -68,9 +139,6 @@
               <a role="button" data-toggle="collapse" data-parent="#accordion" href="#your-answers-body-2" aria-expanded="true" aria-controls="your-answers-body-2">
                 Available documents
               </a>
-              <div class="pull-right">
-                <button type="button" id="force-refresh" class="btn btn-warning btn-xs" onclick="refresh_output_doc({{project.root_task.module.app.id}});return false;"> Refresh documents <span class="glyphicon glyphicon-refresh"></span></button>
-              </div>
             </h4>
           </div>
           <div id="your-answers-body-2" class="panel-collapse collapse in" role="tabpanel" aria-labelledby="your-answers-title-2">
@@ -95,12 +163,13 @@
                           {% elif document.format == "xml" %}
                             <a href="{{task.get_absolute_url}}/download/document/{{document.id | urlencode }}/xml">OSCAL (xml)</a>&nbsp;&nbsp;
                           {% else %}
-                            <a href="{{task.get_absolute_url}}/download/document/{{document.id | urlencode }}/docx">Word (docx)</a>&nbsp;&nbsp;
+                            <a href="{{task.get_absolute_url}}/download/document/{{document.id | urlencode }}/docx">Word (docx)</a><button id="projectAssetWordConfigButton" type="button" class="btn-xs btn-primary glyphicon glyphicon-cog" data-toggle="modal" data-target="#projectAssetWordConfig" aria-label="Word (docx) Settings" tooltip="Word (docx) Settings" style="text-align: center; margin-right:10px; margin-left:5px;"></button>
                             {% if gr_pdf_generator == 'wkhtmltopdf' %}<a href="{{task.get_absolute_url}}/download/document/{{document.id | urlencode }}/pdf">PDF</a>&nbsp;&nbsp;{% endif %}
-                            <a href="{{task.get_absolute_url}}/download/document/{{document.id | urlencode }}/odt">Open Office (odt)</a>&nbsp;&nbsp;
+                            <!-- <a href="{{task.get_absolute_url}}/download/document/{{document.id | urlencode }}/odt">Open Office (odt)</a>&nbsp;&nbsp; -->
                             <a href="{{task.get_absolute_url}}/download/document/{{document.id | urlencode }}/html">HTML</a>&nbsp;&nbsp;
-                            <a href="{{task.get_absolute_url}}/download/document/{{document.id | urlencode }}/markdown">Markdown</a>&nbsp;&nbsp;
-                            <a href="{{task.get_absolute_url}}/download/document/{{document.id | urlencode }}/plain">Plain Text</a>&nbsp;&nbsp;
+                            <button id="exportCSVTemplateSSPButton" type="button" class="btn-xs btn-primary glyphicon glyphicon-copy" data-toggle="modal" data-target="#exportCSVTemplateSSP" aria-label="CSV" tooltip="exportCSVTemplateSSP" style="text-align: center; margin-right:10px; margin-left:5px;">CSV</button>&nbsp;&nbsp;
+                            <!-- <a href="{{task.get_absolute_url}}/download/document/{{document.id | urlencode }}/markdown">Markdown</a>&nbsp;&nbsp; -->
+                            <!--<a href="{{task.get_absolute_url}}/download/document/{{document.id | urlencode }}/plain">Plain Text</a>&nbsp;&nbsp;-->
                           {% endif %}
                         </td>
                     </tr>
@@ -117,9 +186,17 @@
           <div class="panel-heading" rol="tab" id="your-answers-title">
             <h4 class="panel-title">
               <a role="button" data-toggle="collapse" data-parent="#accordion" href="#your-answers-body" aria-expanded="true" aria-controls="your-answers-body">
-                Your Answers
+                {{ task.title }} Module Summary
               </a>
+
+              <span class="pull-right">
+                {# Reviewer's approval page #}
+                {% if can_review %}
+                  <a id="btn-review-answers" class="btn-link" href="{{task.project.get_absolute_url}}/list#task-{{task.id}}" class="btn btn-default">Review and approve answers</a>
+                {% endif %}
+              </span>
             </h4>
+
           </div>
           <div id="your-answers-body" class="panel-collapse collapse in" role="tabpanel" aria-labelledby="your-answers-title">
             <div class="panel-body output-document">
@@ -165,79 +242,8 @@
           </div>
         </div>
       {% endif %}
-
     </div> <!-- /accordion -->
     <div id="continue-nav" class="task-answers">
-      {% with answers_question=task.is_answer_to_unique %}
-        {% if answers_question and answers_question.task.editor == request.user %}
-          {% if task.project.is_account_project %}
-            {# there is nothing else in the account settings project #}
-            <p><a id="return-to-projects" href="/projects" class="btn btn-success">
-              Return to Projects &raquo;
-            </a></p>
-          {% else %}
-            {% if answers_question.task == answers_question.task.project.root_task %}
-              {# return to project #}
-              <p>
-                {# Show this form when we successfully determine next question #}
-                {% if next_module_spec %}
-                  {# Start a task directly using the module type in the specification. #}
-                  {% if not next_module_spec.protocol %}
-                  <form class="start-task" method="post" action="/tasks/start"
-                        onclick="$(this).submit();" style="cursor: pointer">
-                        {% csrf_token %}
-                        <input type="hidden" name="project" value="{{task.project.id}}"/>
-                        <input type="hidden" name="question" value="{{next_module_spec.id}}"/>
-                        <input type="hidden" name="previous" value="project"/>
-                    {% else %}
-                      {# Go to the Apps Catalog to select an app that implements the protocol specified on the question. #}
-                      <form method="get" action="{% url 'store' %}"
-                        onclick="$(this).submit();" style="cursor: pointer">
-                        <input type="hidden" name="q" value="{{task.project.root_task.id}}/{{next_module_spec.id}}">
-                    {% endif %}
-                    <div class="btn btn-success">Continue to {{next_module_spec.title}} &raquo;</div>
-                  </form>
-                  <br>
-                {% endif %}
-                {# Include default link to the project page #}
-                <a id="return-to-project" href="{{task.project.get_absolute_url}}#tab={{answers_question.question.spec.tab|slugify}}/{{answers_question.question.spec.group|slugify}}/{{answers_question.question.key|slugify}}/{{task.id}}" class="btn btn-default">
-                  Return to project
-                </a>
-              </p>
-            {% else %}
-              {# return to non-project parent task #}
-              <p><a id="return-to-supertask" href="{{answers_question.task.get_absolute_url}}" class="btn btn-success">
-                Continue Answering {{answers_question.task.title}} &raquo;
-              </a></p>
-            {% endif %}
-            {# TODO: Does module-set work correctly? #}
-            {% if answers_question.question.spec.type == "module-set" %}
-              <form method="post" action="/tasks/start" style="display:inline;">
-                {% csrf_token %}
-                <input type="hidden" name="project" value="{{task.project.id}}"/>
-                <input type="hidden" name="question" value="{{answers_question.question.key}}"/>
-                <input type="hidden" name="previous" value="task"/>
-                <a href="#" onclick="$(this).parent('form').submit(); return false;" class="btn btn-success" title="Add Another {{answers_question.question.answer_type_module.title}} to {{answers_question.question.spec.title}}.">
-                  Start New {{answers_question.question.answer_type_module.title}} &raquo;
-                </a>
-              </form>
-            {% endif %}
-          {% endif %}
-        {% else %}
-          {# every task, except projects, are now subtasks of other tasks, so this only occurs if a task is a subtask to multiple super-tasks #}
-          <p><a href="{{task.project.get_absolute_url}}" class="btn btn-success">
-           {# we used to say 'with other modules in {{task.project.title}}' but there may not be any other modules #}
-            Continue &raquo;
-          </a></p>
-        {% endif %}
-      {% endwith %}
-
-      {% if can_review %}
-        <p><a id="btn-review-answers" href="{{task.project.get_absolute_url}}/list#task-{{task.id}}" class="btn btn-default">
-          <em class="glyphicon glyphicon-list"></em>
-          Review &raquo;
-        </a></p>
-      {% endif %}
     </div> <!-- / continue panel -->
   </div> <!-- focus-area-wrapper -->
 
@@ -245,27 +251,130 @@
     &nbsp;
   </div>
 
-  <div id="progress-project-area-wrapper" class="col-xs-6 col-sm-6 col-md-3 col-lg-3 task-progress-project">
+  <div id="progress-project-area-wrapper" class="col-xs-8 col-sm-6 col-md-3 col-lg-3 col-xl-2 question-progress-project">
     {% include "task-progress-project-list.html" with previous="question" %}
+  </div>
+
+</div>
+
+<div class="modal fade" id="projectAssetWordConfig" tabindex="-1" aria-labelledby="projectAssetWordConfig" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="projectAssetWordConfig">Export Document Settings - Word (docx)</h2>
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="table-responsive">
+            <span id="projectAssetWordConfigValidation"></span>
+            <table class="table table-hover">
+              <thead>
+                  <th>Template Name</th>
+                  <th>Filename</th>
+                  <th>Description</th>
+                  <th>Created</th>
+                  <th>Updated</th>
+              </thead>
+              <tbody>
+              {% for asset in project.assets.all %}
+                  <tr style="cursor: pointer">
+                    <td>
+                        {% if asset.default %}
+                            <input type="radio" name="projectAssets" id="radio-{{ asset.id }}" checked/>
+                        {% else %}
+                            <input type="radio" name="projectAssets" id="radio-{{ asset.id }}" />
+                        {%  endif  %}
+                      <label for="radio{{ forloop.counter }}">{{ asset.title }} </label>
+                    </td>
+                    <td>{{ asset.filename }}</td>
+                    <td style="max-width: 30em;">{{ asset.description }}</td>
+                    <td>{{ asset.created }}</td>
+                    <td>{{ asset.updated }}</td>
+                  </tr>
+              {% endfor %}
+              </tbody>
+          </table>
+        </div>
+
+      </div>
+      <div class="modal-footer">
+          <span style="float:left;" class="help-block">To add new templates please contact your Administrator</span>
+{#          <span ><i class="warning"></i></span>#}
+        <button type="button" class="btn btn-secondary" data-dismiss="modal">Close</button>
+      </div>
+    </div>
   </div>
 </div>
 
+<div class="modal fade" id="exportCSVTemplateSSP" tabindex="-1" aria-labelledby="exportCSVTemplateSSP" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title" id="exportCSVTemplateSSP">Export SSP as CSV</h2>
+        <div style="float:left;" class="help-block">Enter the five column headers for your SSP Control Statement CSV Export</div>
+      </div>
+      <div class="modal-body">
+        <div class="table-responsive">
+            <span id="exportCSVTemplateSSPValidation"></span>
+            <form role="form" class="form-horizontal" method="POST">
+                 {% csrf_token %}
+                <div class="modal-body">
+                    {% for field in export_csv_form %}
+                      <label class="col-xs-5 control-label" style="text-align:left;" for="{{ field.auto_id }}">{{ field.label }}</label>
+                      {{ field }}
+                    {% endfor %}
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-default" data-dismiss="modal">Cancel</button>
+                    <button id="select_portfolio_submit" class="btn btn-success btn-submit" type="submit">Export</button>
+                </div>
+            </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
+{#</div>#}
 {% endblock %}
 
 {% block scripts %}
+  {% include "task-question-debug-links.html" %}
+
   {% if authoring_tool_enabled %}
   <script src="{% static "js/authoring_tool.js" %}"></script>
   {% endif %}
 
   <script src="{% static "vendor/push.js" %}"> </script>
 
-  {% include "task-question-debug-links.html" %}
-
   <script>
   // Allow templates to create Bootstrap 3 popovers.
   $('.output-document *[data-toggle=popover]')
     .popover()
     .css({ cursor: 'pointer' });
+
+  $('.modal .table tbody tr').click(function(event) {
+      if (event.target.type !== 'radio') {
+        var previouslySelected = $('input[name="projectAssets"]:checked')[0];
+        $(':radio', this).trigger('click');
+        var tmp = $('input[name="projectAssets"]:checked')[0].id.split('-');
+        var selectedAsset = tmp[1];
+        ajax_with_indicator({
+            url: "/projects/{{ project.id }}/assets/" + selectedAsset + '/__update',
+            data: {
+                "default": true
+            },
+            dataType: "json",
+            method: "POST",
+            success: function (res) {}, error: function (res) {
+                previouslySelected.checked = true;
+                var errorjson = $.parseJSON(res);
+                show_modal_error("Search Error", errorjson["message"]);
+            }
+        })
+      }
+    });
 
   // The download button shows a modal to ask what file format to download in.
   function download_document(document_id) {
@@ -285,70 +394,5 @@
     });
   }
 
-  //$(function() {
-  //  // Poll for changes to the answers in the project, which would mean
-  //  // this document may be out of date.
-  //  var initial_timestamp = {{task.project.root_task.updated.timestamp|json}};
-  //  var interval = setInterval(check_for_update, 2500);
-  //  var is_checking_for_update = false;
-  //  function check_for_update() {
-  //    if (is_checking_for_update) return;
-  //    is_checking_for_update = true;
-  //    $.ajax({
-  //      method: 'POST',
-  //      url: '/tasks/_get_task_timetamp',
-  //      data: {
-  //        id: {{task.project.root_task.id}},
-  //        get_changes_since: initial_timestamp
-  //      },
-  //      success: function(res) {
-  //        // Do nothing if the timestamp matches the timestamp
-  //        // when the page was generated.
-  //        if (res.timestamp == initial_timestamp)
-  //          return;
-
-  //        // Don't poll for any further changes.
-  //        clearInterval(interval);
-
-  //        // Show a desktop notification.
-  //        Push.create("Project Information Changed", {
-  //          body: res.changes,
-  //          timeout: 5000
-  //        });
-
-  //        // Dim the page and reload.
-  //        var modal = $('<div style="display: none; position: fixed; left: 0; top: 0; width: 100%; height: 100%; z-index: 100000; text-align: center; background-color: rgba(255,255,255,.75)"><div style="margin: 20% auto"><div><span class="fas fa-spinner fa-pulse"></span></div><div class="message">Loading...</div></div></div>');
-  //        $('body').append(modal);
-  //        modal.fadeIn();
-  //        window.location.reload();
-  //      },
-  //      complete: function() {
-  //        is_checking_for_update = false;
-  //      }
-  //    })
-  //  }
-  //});
-
-  function refresh_output_doc(app_id) {
-      if (upgrade_app_option_confirm
-         {% if is_question_page %}
-         && !confirm("All instances of '{{task.project.root_task.title}}' will be updated.\n\nAre you sure you want to upgrade?"))
-         {% else %}
-         && !confirm("Force refresh of output document(s) in '{{project.root_task.title}}'?"))
-         {% endif %}
-        return;
-      ajax_with_indicator({
-          url: "/tasks/_refresh-output-doc",
-          method: "POST",
-          data: {
-            app: app_id,
-            force: upgrade_app_option_force ? "true" : "false"
-          },
-          keep_indicator_forever: true, // keep the ajax indicator up forever --- it'll go away when we issue the redirect or reload
-          success: function(res) {
-            location.reload();
-          }
-      })
-    }
   </script>
 {% endblock %}

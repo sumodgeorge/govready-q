@@ -1,21 +1,28 @@
 from pathlib import Path
 import os
 import json
+import auto_prefetch
 from django.db import models
+from django.db.models import Count
 from django.utils.functional import cached_property
 from guardian.shortcuts import (assign_perm, get_objects_for_user,
                                 get_perms_for_model, get_user_perms,
                                 get_users_with_perms, remove_perm)
 from simple_history.models import HistoricalRecords
 from jsonfield import JSONField
+from natsort import natsorted
 
-from .oscal import Catalogs, Catalog
+from controls.enums.components import ComponentTypeEnum, ComponentStateEnum
+from siteapp.model_mixins.tags import TagModelMixin
+from controls.enums.statements import StatementTypeEnum
+from controls.oscal import Catalogs, Catalog, check_and_extend
 import uuid
 import tools.diff_match_patch.python3 as dmp_module
 from copy import deepcopy
 from django.db import transaction
 
 BASELINE_PATH = os.path.join(os.path.dirname(__file__),'data','baselines')
+EXTERNAL_BASELINE_PATH = os.path.join(f"{os.getcwd()}",'local', 'controls', 'data', 'baselines')
 ORGPARAM_PATH = os.path.join(os.path.dirname(__file__),'data','org_defined_parameters')
 
 class ImportRecord(models.Model):
@@ -41,26 +48,26 @@ class SystemException(Exception):
     """Class for raising custom exceptions with Systems"""
     pass
 
-class Statement(models.Model):
+class Statement(auto_prefetch.Model):
     sid = models.CharField(max_length=100, help_text="Statement identifier such as OSCAL formatted Control ID", unique=False, blank=True, null=True)
     sid_class = models.CharField(max_length=200, help_text="Statement identifier 'class' such as 'NIST_SP-800-53_rev4' or other OSCAL catalog name Control ID.", unique=False, blank=True, null=True)
     pid = models.CharField(max_length=20, help_text="Statement part identifier such as 'h' or 'h.1' or other part key", unique=False, blank=True, null=True)
     body = models.TextField(help_text="The statement itself", unique=False, blank=True, null=True)
-    statement_type = models.CharField(max_length=150, help_text="Statement type.", unique=False, blank=True, null=True)
+    statement_type = models.CharField(max_length=150, help_text="Statement type.", unique=False, blank=True, null=True, choices=StatementTypeEnum.choices())
     remarks = models.TextField(help_text="Remarks about the statement.", unique=False, blank=True, null=True)
     status = models.CharField(max_length=100, help_text="The status of the statement.", unique=False, blank=True, null=True)
     version = models.CharField(max_length=20, help_text="Optional version number.", unique=False, blank=True, null=True)
     created = models.DateTimeField(auto_now_add=True, db_index=True)
     updated = models.DateTimeField(auto_now=True, db_index=True)
 
-    parent = models.ForeignKey('self', help_text="Parent statement", related_name="children", on_delete=models.SET_NULL, blank=True, null=True)
-    prototype = models.ForeignKey('self', help_text="Prototype statement", related_name="instances", on_delete=models.SET_NULL, blank=True, null=True)
+    parent = auto_prefetch.ForeignKey('self', help_text="Parent statement", related_name="children", on_delete=models.SET_NULL, blank=True, null=True)
+    prototype = auto_prefetch.ForeignKey('self', help_text="Prototype statement", related_name="instances", on_delete=models.SET_NULL, blank=True, null=True)
     delegate = models.ForeignKey('self', help_text="Delegate statement", related_name="delegators", on_delete=models.SET_NULL, blank=True, null=True)
-    producer_element = models.ForeignKey('Element', related_name='statements_produced', on_delete=models.CASCADE, blank=True, null=True, help_text="The element producing this statement.")
-    consumer_element = models.ForeignKey('Element', related_name='statements_consumed', on_delete=models.CASCADE, blank=True, null=True, help_text="The element the statement is about.")
+    producer_element = auto_prefetch.ForeignKey('Element', related_name='statements_produced', on_delete=models.CASCADE, blank=True, null=True, help_text="The element producing this statement.")
+    consumer_element = auto_prefetch.ForeignKey('Element', related_name='statements_consumed', on_delete=models.CASCADE, blank=True, null=True, help_text="The element the statement is about.")
     mentioned_elements = models.ManyToManyField('Element', related_name='statements_mentioning', blank=True, help_text="All elements mentioned in a statement; elements with a first degree relationship to the statement.")
     uuid = models.UUIDField(default=uuid.uuid4, editable=False, help_text="A UUID (a unique identifier) for this Statement.")
-    import_record = models.ForeignKey(ImportRecord, related_name="import_record_statements", on_delete=models.CASCADE,
+    import_record = auto_prefetch.ForeignKey(ImportRecord, related_name="import_record_statements", on_delete=models.CASCADE,
                                       unique=False, blank=True, null=True, help_text="The Import Record which created this Statement.")
     history = HistoricalRecords(cascade_delete_history=True)
     class Meta:
@@ -82,19 +89,27 @@ class Statement(models.Model):
     @property
     def catalog_control(self):
         """Return the control content from the catalog"""
+
         # Get instance of the control catalog
         catalog = Catalog.GetInstance(catalog_key=self.sid_class)
         # Look up control by ID
         return catalog.get_control_by_id(self.sid)
 
-    @property
+    @cached_property
     def catalog_control_as_dict(self):
         """Return the control content from the catalog"""
+
         # Get instance of the control catalog
         catalog = Catalog.GetInstance(catalog_key=self.sid_class)
-        catalog_control_dict = catalog.get_flattened_controls_all_as_dict()
         # Look up control by ID
-        return catalog_control_dict[self.sid]
+        catalog_control_dict = catalog.get_flattened_control_as_dict(self.catalog_control)
+        return catalog_control_dict
+
+    @cached_property
+    def control_title(self):
+        """Return the control title"""
+
+        return self.catalog_control_as_dict['title']
 
     def create_prototype(self):
         """Creates a prototype statement from an existing statement and prototype object"""
@@ -104,7 +119,7 @@ class Statement(models.Model):
             return self.prototype
             # check if prototype content is the same, report error if not, or overwrite if permission approved
         prototype = deepcopy(self)
-        prototype.statement_type="control_implementation_prototype"
+        prototype.statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value
         prototype.consumer_element_id = None
         prototype.id = None
         prototype.save()
@@ -113,26 +128,19 @@ class Statement(models.Model):
         self.save()
         return self.prototype
 
-    def create_instance_from_prototype(self, consumer_element_id):
+    def create_system_control_smt_from_component_prototype_smt(self, consumer_element_id):
         """Creates a control_implementation statement instance for a system's root_element from an existing control implementation prototype statement"""
 
-        # TODO: Check statement is a prototype
+        # Check statement is a prototype
+        if self.statement_type != StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value:
+            return None
 
-        # System already has instance of the control_implementation statement
-        # TODO: write check for this logic
-        # Get all statements for consumer element so we can identify
-        smts_existing = Statement.objects.filter(consumer_element__id = consumer_element_id, statement_type = "control_implementation").select_related('prototype')
-
-        # Get prototype ids for all consumer element statements
-        smts_existing_prototype_ids = [smt.prototype.id for smt in smts_existing]
-        if self.id is smts_existing_prototype_ids:
+        # Return if statement already has instance associated with consumer_element
+        if self.instances.filter(consumer_element__id=consumer_element_id).exists():
             return self.prototype
 
-        #     # TODO:
-        #     # check if prototype content is the same, report error if not, or overwrite if permission approved
-
         instance = deepcopy(self)
-        instance.statement_type="control_implementation"
+        instance.statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value
         instance.consumer_element_id = consumer_element_id
         instance.id = None
         # Set prototype attribute to newly created instance
@@ -208,16 +216,19 @@ class Statement(models.Model):
     def oscal_statement_id(self):
         return Statement._statement_id_from_control(self.sid, self.pid)
 
-class Element(models.Model):
+class Element(auto_prefetch.Model, TagModelMixin):
     name = models.CharField(max_length=250, help_text="Common name or acronym of the element", unique=True, blank=False, null=False)
     full_name =models.CharField(max_length=250, help_text="Full name of the element", unique=False, blank=True, null=True)
-    description = models.CharField(max_length=255, help_text="Brief description of the Element", unique=False, blank=True, null=True)
+    description = models.TextField(default="Description needed", help_text="Description of the Element", unique=False, blank=False, null=False)
     element_type = models.CharField(max_length=150, help_text="Component type", unique=False, blank=True, null=True)
+    roles = models.ManyToManyField('ElementRole', related_name='elements', blank=True, help_text="Roles assigned to the Element")
     created = models.DateTimeField(auto_now_add=True, db_index=True)
     updated = models.DateTimeField(auto_now=True, db_index=True)
     uuid = models.UUIDField(default=uuid.uuid4, editable=True, help_text="A UUID (a unique identifier) for this Element.")
-    import_record = models.ForeignKey(ImportRecord, related_name="import_record_elements", on_delete=models.CASCADE,
+    import_record = auto_prefetch.ForeignKey(ImportRecord, related_name="import_record_elements", on_delete=models.CASCADE,
                                       unique=False, blank=True, null=True, help_text="The Import Record which created this Element.")
+    component_type = models.CharField(default="software", max_length=50, help_text="OSCAL Component Type.", unique=False, blank=True, null=True, choices=ComponentTypeEnum.choices())
+    component_state = models.CharField(default="operational", max_length=50, help_text="OSCAL Component State.", unique=False, blank=True, null=True, choices=ComponentStateEnum.choices())
 
     # Notes
     # Retrieve Element controls where element is e to answer "What controls selected for a system?" (System is an element.)
@@ -230,7 +241,7 @@ class Element(models.Model):
     #    e.statements_consumed.all()
     #
     # Retrieve statements that are control implementations
-    #    e.statements_consumed.filter(statement_type="control_implementation")
+    #    e.statements_consumed.filter(statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value)
 
     def __str__(self):
         return "'%s id=%d'" % (self.name, self.id)
@@ -257,22 +268,58 @@ class Element(models.Model):
         except:
             return False
 
+    @transaction.atomic
+    def remove_element_control(self, oscal_ctl_id, oscal_catalog_key):
+        """Remove a selected control from a system.root_element"""
+
+        try:
+            if ElementControl.objects.filter(element=self, oscal_ctl_id=oscal_ctl_id, oscal_catalog_key=oscal_catalog_key).exists():
+                ElementControl.objects.get(element=self, oscal_ctl_id=oscal_ctl_id, oscal_catalog_key=oscal_catalog_key).delete()
+            result = True
+        except:
+            result = False
+
+        return result
+
+    @transaction.atomic
     def assign_baseline_controls(self, user, baselines_key, baseline_name):
-        """Assign set of controls from baseline to an element"""
+        """Assign set of controls from baseline to system.root_element"""
 
         # Usage
             # s = System.objects.get(pk=20)
-            # s.root_element.assign_baseline_controls('NIST_SP-800-53_rev4', 'low')
+            # s.root_element.assign_baseline_controls(user, 's', 'low')
 
-        can_assign_controls = user.has_perm('change_element', self)
+        # Get system's existing selected controls and build list control ids
+        selected_controls_cur = self.controls.all()
+        selected_controls_ids_cur = set([f"{sc.oscal_ctl_id}=+={sc.oscal_catalog_key}" for sc in selected_controls_cur])
+
+        # Create object to track controls added, removed, and no_change in existing selected controls
+        changed_controls = {"add": [], "remove": [], "no_change": []}
+
         # Does user have edit permissions on system?
-        if  can_assign_controls:
-            from controls.models import Baselines
+        can_assign_controls = user.has_perm('change_element', self)
+        if can_assign_controls:
             bs = Baselines()
             controls = bs.get_baseline_controls(baselines_key, baseline_name)
             for oscal_ctl_id in controls:
-                ec = ElementControl(element=self, oscal_ctl_id=oscal_ctl_id, oscal_catalog_key=baselines_key)
-                ec.save()
+                if f"{oscal_ctl_id}=+={baselines_key}" in selected_controls_ids_cur:
+                    # Control already in selected, just append to 'no_change' list
+                    changed_controls['no_change'].append(f"{oscal_ctl_id}=+={baselines_key}")
+                    next
+                else:
+                    # Control in in selected, add control to selected controls and append to 'add' list
+                    ec = ElementControl(element=self, oscal_ctl_id=oscal_ctl_id, oscal_catalog_key=baselines_key)
+                    ec.save()
+                    changed_controls['add'].append(f"{oscal_ctl_id}=+={baselines_key}")
+            # We are done adding new controls to selected
+            # Now remove controls previously selected but not in new baseline
+            selected_controls_ids_new = set([f"{oscal_ctl_id}=+={baselines_key}" for oscal_ctl_id in controls])
+            for scc in selected_controls_ids_cur:
+                if scc not in selected_controls_ids_new:
+                    oscal_ctl_id_rm = scc.split("=+=")[0]
+                    remove_result = self.remove_element_control(oscal_ctl_id_rm, baselines_key)
+                    if remove_result:
+                        changed_controls['remove'].append(scc)
             return True
         else:
             # print("User does not have permission to assign selected controls to element's system.")
@@ -280,14 +327,28 @@ class Element(models.Model):
 
     def statements(self, statement_type):
         """Return on the statements of statement_type produced by this element"""
+
         smts = Statement.objects.filter(producer_element = self, statement_type = statement_type)
         return smts
+
+    def consuming_systems(self):
+        """Return list of systems for which Element is producer_element of statement of type control_implementation"""
+
+        root_element_ids = set(filter(None, [ce['consumer_element'] for ce in Statement.objects.filter(producer_element=self).values('consumer_element').distinct()]))
+        systems = System.objects.filter(pk__in=Element.objects.filter(pk__in=root_element_ids).values_list('system', flat=True))
+        # Remove orphaned systems (e.g., systems whose projects have been deleted). See issue https://github.com/GovReady/govready-q/issues/1617
+        systems_with_projects = []
+        for s in systems:
+            if s.projects.exists():
+                systems_with_projects.append(s)
+        systems_with_projects.sort(key=lambda x: x.root_element.name)
+        return systems_with_projects
 
     @property
     def get_control_impl_smts_prototype_count(self):
         """Return count of statements with this element as producer_element"""
 
-        smt_count = Statement.objects.filter(producer_element=self, statement_type="control_implementation_prototype").count()
+        smt_count = Statement.objects.filter(producer_element=self, statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value).count()
 
         return smt_count
 
@@ -319,13 +380,16 @@ class Element(models.Model):
 
     @property
     def selected_controls_oscal_ctl_ids(self):
-        """Return array of selectecd controls oscal ids"""
+        """Return array of selected controls oscal ids"""
         # oscal_ids = self.controls.all()
         oscal_ctl_ids = [control.oscal_ctl_id for control in self.controls.all()]
+        # Sort
+        oscal_ctl_ids = natsorted(oscal_ctl_ids, key=str.casefold)
+
         return oscal_ctl_ids
 
-class ElementControl(models.Model):
-    element = models.ForeignKey(Element, related_name="controls", on_delete=models.CASCADE, help_text="The Element (e.g., System, Component, Host) to which controls are associated.")
+class ElementControl(auto_prefetch.Model):
+    element = auto_prefetch.ForeignKey(Element, related_name="controls", on_delete=models.CASCADE, help_text="The Element (e.g., System, Component, Host) to which controls are associated.")
     oscal_ctl_id = models.CharField(max_length=20, help_text="OSCAL formatted Control ID (e.g., au-2.3)", blank=True, null=True)
     oscal_catalog_key = models.CharField(max_length=100, help_text="Catalog key from which catalog file can be derived (e.g., 'NIST_SP-800-53_rev4')", blank=True, null=True)
     created = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -369,15 +433,22 @@ class ElementControl(models.Model):
         # For debugging.
         return "'%s id=%d'" % (self.oscal_ctl_id, self.id)
 
-    def get_controls_by_element(self, element):
-        query_set = self.objects.filter(element=element)
-        selected_controls = {}
-        for cl in query_set:
-            selected_controls[cl['oscal_ctl_id']] = {'oscal_ctl_id': cl['oscal_ctl_id'],
-                                                     'oscal_catalog_key': cl['oscal_catalog_key'],
-                                                     'uuid': cl['uuid']
-                                                     }
-        return selected_controls
+    # Commenting out get_controls_by_element in 0.9.1.53+ because it does
+    # not appear to be used in the code base.
+    # def get_controls_by_element(self, element):
+
+    #     # TODO: Is this method being used? Can it be deleted?
+    #     query_set = self.objects.filter(element=element)
+    #     selected_controls = {}
+    #     for cl in query_set:
+    #         selected_controls[cl['oscal_ctl_id']] = {'oscal_ctl_id': cl['oscal_ctl_id'],
+    #                                                  'oscal_catalog_key': cl['oscal_catalog_key'],
+    #                                                  'uuid': cl['uuid']
+    #                                                  }
+    #     # Sort
+    #     selected_controls = natsorted(selected_controls, key=lambda x: x.oscal_ctl_id.casefold)
+
+    #     return selected_controls
 
     def get_flattened_oscal_control_as_dict(self):
         cg = Catalog.GetInstance(catalog_key=self.oscal_catalog_key)
@@ -390,14 +461,27 @@ class ElementControl(models.Model):
     #     # Error checking
     #     return impl_smt
 
-class System(models.Model):
-    root_element = models.ForeignKey(Element, related_name="system", on_delete=models.CASCADE, help_text="The Element that is this System. Element must be type [Application, General Support System]")
+class ElementRole(auto_prefetch.Model):
+    role = models.CharField(max_length=250, help_text="Common name or acronym of the role", unique=True, blank=False, null=False)
+    description = models.CharField(max_length=255, help_text="Brief description of the Element", unique=False, blank=False, null=False)
+    created = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated = models.DateTimeField(auto_now=True, db_index=True)
+
+    def __str__(self):
+        return "'%s id=%d'" % (self.role, self.id)
+
+    def __repr__(self):
+        # For debugging.
+        return "'%s id=%d'" % (self.role, self.id)
+
+class System(auto_prefetch.Model):
+    root_element = auto_prefetch.ForeignKey(Element, related_name="system", on_delete=models.CASCADE, help_text="The Element that is this System. Element must be type [Application, General Support System]")
     fisma_id = models.CharField(max_length=40, help_text="The FISMA Id of the system", unique=False, blank=True, null=True)
 
     # Notes
     # Retrieve system implementation statements
     #   system = System.objects.get(pk=2)
-    #   system.root_element.statements_consumed.filter(statement_type="control_implementation")
+    #   system.root_element.statements_consumed.filter(statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value)
     #
     # Retrieve system common controls statements
     #   system = System.objects.get(pk=2)
@@ -435,6 +519,70 @@ class System(models.Model):
         except:
             return False
 
+    def add_control(self, catalog_key, control_id):
+         """Add ElementControl (e.g., selected control) to a system"""
+
+         control = ElementControl(element=self.root_element,
+                                  oscal_catalog_key=catalog_key,
+                                  oscal_ctl_id=control_id
+                                 )
+         control.save()
+         return control
+
+    def remove_control(self, control_id):
+        """Remove ElementControl (e.g., selected control) from a system"""
+        control = ElementControl.objects.get(pk=control_id)
+
+        # Delete Control Statements
+        self.root_element.statements_consumed.filter(statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value,
+                                                     sid_class=control.oscal_catalog_key,
+                                                     sid=control.oscal_ctl_id
+                                                     ).delete()
+        control.delete()
+        return control
+
+    @transaction.atomic
+    def set_fisma_impact_level(self, fisma_impact_level):
+        """Assign FISMA impact level to system"""
+        # TODO: Fisma impact level is actually the security-sensitivity-level as defined in oscal ssp schema.
+
+        # Get or create the fisma_impact_level smt for system's root_element; should only have 1 statement
+        smt = Statement.objects.create(statement_type=StatementTypeEnum.FISMA_IMPACT_LEVEL.value, producer_element=self.root_element,consumer_element=self.root_element, body=fisma_impact_level)
+        return fisma_impact_level, smt
+
+    @property
+    def get_fisma_impact_level(self):
+        """Assign FISMA impact level to system"""
+
+        # Get or create the fisma_impact_level smt for system's root_element; should only have 1 statement
+        smt, created = Statement.objects.get_or_create(statement_type=StatementTypeEnum.FISMA_IMPACT_LEVEL.value, producer_element=self.root_element,consumer_element=self.root_element)
+        fisma_impact_level = smt.body
+        return fisma_impact_level
+
+    @transaction.atomic
+    def set_security_impact_level(self, security_impact_level):
+        """Assign Security impact levels to system"""
+
+        security_objective_smt = self.root_element.statements_consumed.filter(statement_type=StatementTypeEnum.SECURITY_IMPACT_LEVEL.value)
+        if security_objective_smt.exists():
+            security_objective_smt.update(body=security_impact_level)
+        else:
+            # Set the security_impact_level smt for element; should only have 1 statement
+            security_objective_smt, created = Statement.objects.get_or_create(statement_type=StatementTypeEnum.SECURITY_IMPACT_LEVEL.value, producer_element=self.root_element,consumer_element=self.root_element, body=security_impact_level)
+        return security_impact_level, security_objective_smt
+
+    @property
+    def get_security_impact_level(self):
+        """Assign Security impact levels to system"""
+
+        # Get the security_impact_level smt for element; should only have 1 statement
+        try:
+            smt = Statement.objects.get(statement_type=StatementTypeEnum.SECURITY_IMPACT_LEVEL.value, producer_element=self.root_element, consumer_element=self.root_element)
+            security_impact_level = eval(smt.body)# Evaluate string of dictionary
+            return security_impact_level
+        except Statement.DoesNotExist:
+            return {}
+
     @property
     def smts_common_controls_as_dict(self):
         common_controls = self.root_element.common_controls.all()
@@ -448,7 +596,7 @@ class System(models.Model):
 
     @property
     def smts_control_implementation_as_dict(self):
-        smts = self.root_element.statements_consumed.filter(statement_type="control_implementation").order_by('pid')
+        smts = self.root_element.statements_consumed.filter(statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value).order_by('pid')
         smts_as_dict = {}
         for smt in smts:
             if smt.sid in smts_as_dict:
@@ -465,7 +613,7 @@ class System(models.Model):
         elm = self.root_element
         selected_controls = elm.controls.all().values("oscal_ctl_id", "uuid")
         # Get the smts_control_implementations ordered by part, e.g. pid
-        smts = elm.statements_consumed.filter(statement_type="control_implementation").order_by('pid')
+        smts = elm.statements_consumed.filter(statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value).order_by('pid')
 
         smts_as_dict = {}
 
@@ -512,7 +660,8 @@ class System(models.Model):
             # Poor performance, at least in some instances, appears to being caused by `smt.producer_element.name`
             # parameter in the below statement.
             if smt.producer_element:
-                smts_as_dict[smt.sid]['combined_smt'] += f"<i>{smt.producer_element.name}</i>\n{status_str}\n\n{smt.body}\n\n"
+                smt_formatted = smt.body.replace('\n','<br/>')
+                smts_as_dict[smt.sid]['combined_smt'] += f"<i>{smt.producer_element.name}</i><br/>{status_str}<br/><br/>{smt_formatted}<br/><br/>"
             # When "smt.producer_element.name" the provided as a fixed string (e.g, "smt.producer_element.name")
             # for testing purposes, the loop runs 3x faster
             # The reference `smt.producer_element.name` appears to be calling the database and creating poor performance
@@ -547,13 +696,16 @@ class System(models.Model):
         """Retrieve counts of control status"""
 
         status_list = ['Not Implemented', 'Planned', 'Partially Implemented', 'Implemented', 'Unknown']
-        status_stats = {}
+        status_stats = {status: 0 for status in status_list}
         # Fetch all selected controls
         elm = self.root_element
-        for status in status_list:
-            # Get the smts_control_implementations ordered by part, e.g. pid
-            status_stats[status] = elm.statements_consumed.filter(statement_type="control_implementation", status=status).count()
+
+        counts = Statement.objects.filter(statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value, status__in=status_list).values('status').order_by('status').annotate(count=Count('status'))
+        status_stats.update({r['status']: r['count'] for r in counts})
+
         # TODO add index on statement status
+        # Get overall controls addressed (e.g., covered)
+        status_stats['Addressed'] = elm.statements_consumed.filter(statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value).values('sid').distinct().count()
         return status_stats
 
     @cached_property
@@ -564,13 +716,11 @@ class System(models.Model):
         status_list = ['Open', 'Closed', "In Progress"]
         # TODO
         # Get a unique filter of status list and gather on that...
-        status_stats = {}
-        # Fetch all selected controls
-        elm = self.root_element
-        for status in status_list:
-            # Get the smts_control_implementations ordered by part, e.g. pid
-            status_stats[status] = elm.statements_consumed.filter(statement_type="POAM",
-                                                                  status__iexact=status).count()
+        status_stats = {status: 0 for status in status_list}
+        # Fetch all system POA&Ms
+        counts = Statement.objects.filter(statement_type="POAM", consumer_element=self.root_element, status__in=status_list).values('status').order_by('status').annotate(
+            count=Count('status'))
+        status_stats.update({r['status']: r['count'] for r in counts})
         # TODO add index on statement status
         return status_stats
 
@@ -587,6 +737,12 @@ class System(models.Model):
 
     producer_elements = cached_property(get_producer_elements)
 
+    def set_component_control_status(self, element, status):
+        """Batch update status of system control implementation statements for a specific element."""
+
+        self.root_element.statements_consumed.filter(producer_element=element, statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value).update(status=status)
+        return True
+
 class CommonControlProvider(models.Model):
     name = models.CharField(max_length=150, help_text="Name of the CommonControlProvider", unique=False)
     description = models.CharField(max_length=255, help_text="Brief description of the CommonControlProvider", unique=False)
@@ -594,19 +750,19 @@ class CommonControlProvider(models.Model):
     def __str__(self):
         return self.name
 
-class CommonControl(models.Model):
+class CommonControl(auto_prefetch.Model):
     name = models.CharField(max_length=150, help_text="Name of the CommonControl", unique=False, blank=True, null=True)
     description = models.CharField(max_length=255, help_text="Brief description of the CommonControlProvider", unique=False)
     oscal_ctl_id = models.CharField(max_length=20, help_text="OSCAL formatted Control ID (e.g., au-2.3)", blank=True, null=True)
     legacy_imp_smt = models.TextField(help_text="Legacy large implementation statement", unique=False, blank=True, null=True,)
-    common_control_provider =  models.ForeignKey(CommonControlProvider, on_delete=models.CASCADE)
+    common_control_provider =  auto_prefetch.ForeignKey(CommonControlProvider, on_delete=models.CASCADE)
 
     def __str__(self):
         return self.name
 
-class ElementCommonControl(models.Model):
-    element = models.ForeignKey(Element, related_name="common_controls", on_delete=models.CASCADE, help_text="The Element (e.g., System, Component, Host) to which common controls are associated.")
-    common_control = models.ForeignKey(CommonControl, related_name="element_common_control", on_delete=models.CASCADE, help_text="The Common Control for this association.")
+class ElementCommonControl(auto_prefetch.Model):
+    element = auto_prefetch.ForeignKey(Element, related_name="common_controls", on_delete=models.CASCADE, help_text="The Element (e.g., System, Component, Host) to which common controls are associated.")
+    common_control = auto_prefetch.ForeignKey(CommonControl, related_name="element_common_control", on_delete=models.CASCADE, help_text="The Common Control for this association.")
     oscal_ctl_id = models.CharField(max_length=20, help_text="OSCAL formatted Control ID (e.g., au-2.3)", blank=True, null=True)
     oscal_catalog_key = models.CharField(max_length=100, help_text="Catalog key from which catalog file can be derived (e.g., 'NIST_SP-800-53_rev4')", blank=True, null=True)
     created = models.DateTimeField(auto_now_add=True, db_index=True)
@@ -625,8 +781,9 @@ class ElementCommonControl(models.Model):
 class Baselines (object):
     """Represent list of baselines"""
     def __init__(self):
-        global BASELINE_PATH
+
         self.file_path = BASELINE_PATH
+        self.external_file_path = EXTERNAL_BASELINE_PATH
         self.baselines_keys = self._list_keys()
         # self.index = self._build_index()
 
@@ -640,18 +797,20 @@ class Baselines (object):
             # bs.get_baseline_controls('NIST_SP-800-53_rev4', 'moderate')
 
     def _list_files(self):
-        return [
+        return self.extend_external_baselines([
             'NIST_SP-800-53_rev4_baselines.json',
             # 'NIST_SP-800-53_rev5_baselines.json',
             'NIST_SP-800-171_rev1_baselines.json'
-        ]
+        ], "files")
+
 
     def _list_keys(self):
-        return [
+        return self.extend_external_baselines([
             'NIST_SP-800-53_rev4',
             # 'NIST_SP-800-53_rev5',
             'NIST_SP-800-171_rev1'
-        ]
+        ], "keys")
+
 
     def _load_json(self, baselines_key):
         """Read baseline file - JSON"""
@@ -660,8 +819,12 @@ class Baselines (object):
         data_file = os.path.join(self.file_path, self.data_file)
         # Does file exist?
         if not os.path.isfile(data_file):
-            print("ERROR: {} does not exist".format(data_file))
-            return False
+            # Check if there any external oscal baseline files
+            try:
+                data_file = os.path.join(self.external_file_path, self.data_file)
+            except:
+                print("ERROR: {} does not exist".format(data_file))
+                return False
         # Load file as json
         try:
             with open(data_file, 'r') as json_file:
@@ -688,6 +851,17 @@ class Baselines (object):
     def body(self):
         return self.legacy_imp_smt
 
+
+    def extend_external_baselines(self, baseline_info, extendtype):
+        """
+        Add external baselines to list of baselines
+        """
+        os.makedirs(EXTERNAL_BASELINE_PATH, exist_ok=True)
+        external_baselines = [file for file in os.listdir(EXTERNAL_BASELINE_PATH) if
+                  file.endswith('.json')]
+
+        baseline_info = check_and_extend(baseline_info, external_baselines, extendtype, "_baselines")
+        return baseline_info
 class OrgParams(object):
     """
     Represent list of organizational defined parameters. Temporary
@@ -704,7 +878,6 @@ class OrgParams(object):
         return cls._singleton
 
     def init(self):
-        global ORGPARAM_PATH
         self.cache = {}
 
         path = Path(ORGPARAM_PATH)
@@ -763,13 +936,13 @@ class Poam(models.Model):
     # TODO:
     #   - On Save be sure to replace any '\r\n' with '\n' added by round-tripping with excel
 
-class Deployment(models.Model):
+class Deployment(auto_prefetch.Model):
     name = models.CharField(max_length=250, help_text="Name of the deployment", unique=False, blank=False, null=False)
     description = models.CharField(max_length=255, help_text="Brief description of the deployment", unique=False, blank=False, null=False)
     created = models.DateTimeField(auto_now_add=True, db_index=True)
     updated = models.DateTimeField(auto_now=True, db_index=True)
     uuid = models.UUIDField(default=uuid.uuid4, editable=True, help_text="A UUID (a unique identifier) for the deployment.")
-    system = models.ForeignKey('System', related_name='deployments', on_delete=models.CASCADE, blank=True, null=True, help_text="The system associated with the deployment")
+    system = auto_prefetch.ForeignKey('System', related_name='deployments', on_delete=models.CASCADE, blank=True, null=True, help_text="The system associated with the deployment")
     inventory_items = JSONField(blank=True, null=True,
         help_text="JSON object representing the inventory items in a deployment.")
     history = HistoricalRecords(cascade_delete_history=True)
@@ -793,14 +966,14 @@ class Deployment(models.Model):
     def get_absolute_url(self):
         return "/systems/%d/deployments" % (self.system.id)
 
-class SystemAssessmentResult(models.Model):
+class SystemAssessmentResult(auto_prefetch.Model):
     name = models.CharField(max_length=250, help_text="Name of the system assessment result", unique=False, blank=False, null=False)
     description = models.CharField(max_length=255, help_text="Brief description of the system assessment result", unique=False, blank=True, null=True)
     created = models.DateTimeField(auto_now_add=True, db_index=True)
     updated = models.DateTimeField(auto_now=True, db_index=True)
     uuid = models.UUIDField(default=uuid.uuid4, editable=True, help_text="A UUID (a unique identifier) for the system assessment result.")
-    system = models.ForeignKey('System', related_name='system_assessment_result', on_delete=models.CASCADE, blank=True, null=True, help_text="The system associated with the system assessment result")
-    deployment = models.ForeignKey(Deployment, related_name="assessment_results",
+    system = auto_prefetch.ForeignKey('System', related_name='system_assessment_result', on_delete=models.CASCADE, blank=True, null=True, help_text="The system associated with the system assessment result")
+    deployment = auto_prefetch.ForeignKey(Deployment, related_name="assessment_results",
         unique=False, blank=True, null=True, on_delete=models.SET_NULL,
         help_text="The deployment associated with the assessment result.")
     assessment_results = JSONField(blank=True, null=True,
@@ -819,10 +992,10 @@ class SystemAssessmentResult(models.Model):
 #     statement = models.OneToOneField(Statement, related_name="assessment_result",
 #         unique=False, blank=True, null=True, on_delete=models.CASCADE,
 #         help_text="The assessment results details for this statement. Statement must be type 'assessment_result'.")
-#     deployment = models.ForeignKey(Deployment, related_name="assessment_results",
+#     deployment = auto_prefetch.ForeignKey(Deployment, related_name="assessment_results",
 #         unique=False, blank=True, null=True, on_delete=models.SET_NULL,
 #         help_text="The deployment associated with the assessment result.")
-#     # reporter = models.ForeignKey(Reporter, on_delete=models.CASCADE)
+#     # reporter = auto_prefetch.ForeignKey(Reporter, on_delete=models.CASCADE)
 #     # inventory_item_uuid = models.UUIDField(default=None, editable=True, unique=False, blank=True, null=True,
 #         # help_text="UUID of the inventory item.")
 #     # data = JSONField(blank=True, null=True,

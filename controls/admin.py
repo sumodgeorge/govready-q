@@ -1,7 +1,7 @@
 import csv
 from django.contrib import admin
 from django.http import HttpResponse
-from .models import ImportRecord, Statement, Element, ElementControl, System, CommonControlProvider, CommonControl, ElementCommonControl, Poam, Deployment, SystemAssessmentResult
+from .models import ImportRecord, Statement, Element, ElementControl, ElementRole, System, CommonControlProvider, CommonControl, ElementCommonControl, Poam, Deployment, SystemAssessmentResult
 from guardian.admin import GuardedModelAdmin
 from simple_history.admin import SimpleHistoryAdmin
 
@@ -24,24 +24,31 @@ class ExportCsvMixin:
 
     export_as_csv.short_description = "Export Selected as CSV"
 
-
 class ImportRecordAdmin(admin.ModelAdmin, ExportCsvMixin):
     list_display = ('created', 'uuid')
     actions = ["export_as_csv"]
 
 class StatementAdmin(SimpleHistoryAdmin, ExportCsvMixin):
     list_display = ('id', 'sid', 'sid_class', 'producer_element', 'statement_type', 'delegate', 'uuid')
+    search_fields = ('id', 'sid', 'sid_class', 'producer_element', 'uuid')
     actions = ["export_as_csv"]
     readonly_fields = ('created', 'updated', 'uuid')
 
 class ElementAdmin(GuardedModelAdmin, ExportCsvMixin):
-    list_display = ('name', 'full_name', 'id', 'uuid')
+    list_display = ('name', 'full_name', 'element_type', 'id', 'uuid')
+    search_fields = ('name', 'full_name', 'uuid', 'id')
     actions = ["export_as_csv"]
 
 class ElementControlAdmin(admin.ModelAdmin, ExportCsvMixin):
     list_display = ('id', 'element', 'oscal_ctl_id', 'oscal_catalog_key')
     actions = ["export_as_csv"]
     readonly_fields = ('created', 'updated', 'smts_updated')
+
+class ElementRoleAdmin(admin.ModelAdmin, ExportCsvMixin):
+    list_display = ('id', 'role', 'description')
+    search_fields = ('role', 'description')
+    actions = ["export_as_csv"]
+    readonly_fields = ('created', 'updated')
 
 class SystemAdmin(GuardedModelAdmin, ExportCsvMixin):
     list_display = ('id', 'root_element')
@@ -60,7 +67,8 @@ class ElementCommonControlAdmin(admin.ModelAdmin, ExportCsvMixin):
     actions = ["export_as_csv"]
 
 class PoamAdmin(admin.ModelAdmin, ExportCsvMixin):
-    list_display = ('id', 'statement')
+    list_display = ('id', 'poam_id', 'statement', 'controls', 'uuid')
+    search_fields = ('id', 'poam_id', 'statement', 'controls', 'uuid')
     actions = ["export_as_csv"]
 
     def uuid(self, obj):
@@ -71,19 +79,22 @@ class PoamAdmin(admin.ModelAdmin, ExportCsvMixin):
 
 class DeploymentAdmin(SimpleHistoryAdmin, ExportCsvMixin):
     list_display = ('id', 'name', 'system')
+    search_fields = ('id', 'name', 'uuid')
     actions = ["export_as_csv"]
 
     def uuid(self, obj):
         return obj.deployment.uuid
 
 class SystemAssessmentResultAdmin(admin.ModelAdmin):
-    list_display = ('id', 'system', 'deployment')
+    list_display = ('id', 'name', 'system', 'deployment', 'uuid')
+    search_fields = ('id', 'name', 'system', 'deployment', 'uuid')
 
 
 admin.site.register(ImportRecord, ImportRecordAdmin)
 admin.site.register(Statement, StatementAdmin)
 admin.site.register(Element, ElementAdmin)
 admin.site.register(ElementControl, ElementControlAdmin)
+admin.site.register(ElementRole, ElementRoleAdmin)
 admin.site.register(System, SystemAdmin)
 admin.site.register(CommonControlProvider, CommonControlProviderAdmin)
 admin.site.register(CommonControl, CommonControlAdmin)

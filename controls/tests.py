@@ -9,9 +9,10 @@
 # So we hard-code the Chromium binary using options.binary_location="/usr/bin/chromium-browser".
 # If paths differ on your system, you may need to set the PATH system
 # environment variable and the options.binary_location field below.
-import time
+import os
+import unittest
 from pathlib import PurePath
-
+import tempfile
 from django.test import TestCase
 from django.utils.text import slugify
 from selenium.common.exceptions import WebDriverException
@@ -26,8 +27,8 @@ from controls.views import OSCALComponentSerializer
 from siteapp.models import User, Organization, OrganizationalSetting
 from siteapp.tests import SeleniumTest, var_sleep, OrganizationSiteFunctionalTests, wait_for_sleep_after
 from system_settings.models import SystemSettings
-from .models import *
-from .oscal import Catalogs, Catalog
+from controls.models import *
+from controls.oscal import Catalogs, Catalog, EXTERNAL_CATALOG_PATH
 from siteapp.models import User, Project, Portfolio
 from system_settings.models import SystemSettings
 
@@ -128,12 +129,82 @@ class ControlUITests(SeleniumTest):
         wait_for_sleep_after(lambda: self.assertInNodeText("AU-2", "#control-heading"))
         wait_for_sleep_after(lambda: self.assertInNodeText("Audit Events", "#control-heading"))
 
-
     def test_control_enhancement_lookup(self):
         self.browser.get(self.url("/controls/catalogs/NIST_SP-800-53_rev4/control/AC-2 (4)"))
         self.assertInNodeText("AC-2 (4)", "#control-heading")
         self.assertInNodeText("Automated Audit Actions", "#control-heading")
 
+    def test_catalog_list(self):
+        """
+        Check the catalog listing method has the 3 default catalogs
+        """
+
+        os.makedirs(EXTERNAL_CATALOG_PATH, exist_ok=True)
+        catalog_list = Catalogs().list_catalogs()
+        self.assertEqual(len(catalog_list), 3)
+
+    def test_extend_external_catalogs(self):
+        """
+        Extending catalog file and key list
+        """
+        os.makedirs(EXTERNAL_CATALOG_PATH, exist_ok=True)
+        with tempfile.TemporaryFile() as d:
+            temp_file_name = os.path.join(EXTERNAL_CATALOG_PATH, f'{d.name}_revtest_catalog.json')
+
+            # finding fixture data and dumping in the temp file
+            test_catalog = os.getcwd() + "/fixtures/test_catalog.json"
+            with open(test_catalog, 'r') as json_file:
+                catalog_data = json.load(json_file)
+            with open(temp_file_name, 'w') as cred:
+                json.dump(catalog_data, cred)
+
+            extended_files = Catalogs.extend_external_catalogs(self, [
+                'NIST_SP-800-53_rev4_catalog.json',
+                'NIST_SP-800-53_rev5_catalog.json',
+                'NIST_SP-800-171_rev1_catalog.json'
+            ], "files")
+
+            self.assertEqual(len(extended_files), 4)
+
+            extended_keys = Catalogs.extend_external_catalogs(self, [
+                Catalogs.NIST_SP_800_53_rev4,
+                Catalogs.NIST_SP_800_53_rev5,
+                Catalogs.NIST_SP_800_171_rev1
+            ], "keys")
+            self.assertEqual(len(extended_keys), 4)
+            # Delete temp file
+            os.remove(temp_file_name)
+
+    def test_extend_external_baseline(self):
+        """
+        Extending baseline file and key list
+        """
+        os.makedirs(EXTERNAL_BASELINE_PATH, exist_ok=True)
+        with tempfile.TemporaryFile() as d:
+            temp_file_name = os.path.join(EXTERNAL_BASELINE_PATH, f'{d.name}_revtest_baseline.json')
+
+            # finding fixture data and dumping in the temp file
+            test_baseline = os.getcwd() + "/fixtures/test_baseline.json"
+            with open(test_baseline, 'r') as json_file:
+                baseline_data = json.load(json_file)
+            with open(temp_file_name, 'w') as cred:
+                json.dump(baseline_data, cred)
+
+            extended_files = Baselines.extend_external_baselines(self, [
+            'NIST_SP-800-53_rev4_baselines.json',
+            'NIST_SP-800-171_rev1_baselines.json'
+        ], "files")
+
+            self.assertEqual(len(extended_files), 3)
+
+            extended_keys = Baselines.extend_external_baselines(self, [
+            'NIST_SP-800-53_rev4',
+            'NIST_SP-800-171_rev1'
+        ], "keys")
+
+            self.assertEqual(len(extended_keys), 3)
+        # Delete temp file
+        os.remove(temp_file_name)
 #####################################################################
 
 class ComponentUITests(OrganizationSiteFunctionalTests):
@@ -236,7 +307,7 @@ class ComponentUITests(OrganizationSiteFunctionalTests):
 
         element_count_before_import = Element.objects.filter(element_type="system_element").count()
         statement_count_before_import = Statement.objects.filter(
-            statement_type="control_implementation_prototype").count()
+            statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value).count()
 
         # Verify that the contents got copied correctly from the file to the textfield
         try:
@@ -258,7 +329,7 @@ class ComponentUITests(OrganizationSiteFunctionalTests):
         element_count_after_import = Element.objects.filter(element_type="system_element").count()
         self.assertEqual(element_count_before_import, element_count_after_import)
 
-        statement_count_after_import = Statement.objects.filter(statement_type="control_implementation_prototype").count()
+        statement_count_after_import = Statement.objects.filter(statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value).count()
         self.assertEqual(statement_count_before_import, statement_count_after_import)
 
     def test_component_import_oscal_json(self):
@@ -267,7 +338,7 @@ class ComponentUITests(OrganizationSiteFunctionalTests):
         self.browser.get(url)
 
         element_count_before_import = Element.objects.filter(element_type="system_element").count()
-        statement_count_before_import = Statement.objects.filter(statement_type="control_implementation_prototype").count()
+        statement_count_before_import = Statement.objects.filter(statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value).count()
 
         # Test initial import of Component(s) and Statement(s)
         self.click_element('a#component-import-oscal')
@@ -277,12 +348,12 @@ class ComponentUITests(OrganizationSiteFunctionalTests):
         oscal_json_path = self.filepath_conversion(file_input, oscal_json_path, "sendkeys")
 
         self.click_element('input#import_component_submit')
-
+        var_sleep(2)
         element_count_after_import = wait_for_sleep_after(lambda: Element.objects.filter(element_type="system_element").count())
 
         wait_for_sleep_after(lambda: self.assertEqual(element_count_before_import + 2, element_count_after_import))
 
-        statement_count_after_import = Statement.objects.filter(statement_type="control_implementation_prototype").count()
+        statement_count_after_import = Statement.objects.filter(statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value).count()
         self.assertEqual(statement_count_before_import + 4, statement_count_after_import)
         # Test file contains 6 Statements, but only 4 get imported
         # because one has an improper Catalog
@@ -311,9 +382,8 @@ class ComponentUITests(OrganizationSiteFunctionalTests):
         self.assertEqual(duplicate_import_element_count, 1)
 
         statement_count_after_duplicate_import = Statement.objects.filter(
-            statement_type="control_implementation_prototype").count()
+            statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value).count()
         self.assertEqual(statement_count_after_import + 4, statement_count_after_duplicate_import)
-
 
     def test_import_tracker(self):
         """Tests that imports are tracked correctly."""
@@ -386,7 +456,6 @@ class ComponentUITests(OrganizationSiteFunctionalTests):
         statement_count = Statement.objects.filter(import_record=import_record).count()
         self.assertEqual(statement_count, 0)
 
-
     def test_element_rename(self):
         # Ensures that the edit button doesnt appear for non-superusers
         # Logs into a non-superuser account and goes to a components page
@@ -429,7 +498,7 @@ class StatementUnitTests(TestCase):
             sid = "au.3",
             sid_class = "NIST_SP-800-53_rev4",
             body = "This is a test statement.",
-            statement_type = "control_implementation",
+            statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value,
             status = "Implemented"
         )
         smt.save()
@@ -449,9 +518,6 @@ class StatementUnitTests(TestCase):
         self.assertEqual(smt.diff_prototype_main, [(0, 'This is a test statement.'), (-1, '\nModified statememt')])
 
 class ElementUnitTests(TestCase):
-    ## Simply dummy test ##
-    def test_tests(self):
-        self.assertEqual(1,1)
 
     def test_element_create(self):
         e = Element.objects.create(name="New Element", full_name="New Element Full Name", element_type="system")
@@ -486,7 +552,7 @@ class ElementUnitTests(TestCase):
         """Test copying an element"""
 
         # Create an element
-        e = Element.objects.create(name="OAuth", full_name="OAuth Service", element_type="component")
+        e = Element.objects.create(name="OAuth", full_name="OAuth Service", element_type="system_element")
         self.assertTrue(e.id is not None)
         self.assertTrue(e.name == "OAuth")
         e.save()
@@ -496,7 +562,7 @@ class ElementUnitTests(TestCase):
             sid = "au-3",
             sid_class = "NIST_SP-800-53_rev4",
             body = "This is the first test statement.",
-            statement_type = "control_implementation_prototype",
+            statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value,
             status = "Implemented",
             producer_element = e
         )
@@ -505,7 +571,7 @@ class ElementUnitTests(TestCase):
             sid = "au-4",
             sid_class = "NIST_SP-800-53_rev4",
             body = "This is the first test statement.",
-            statement_type = "control_implementation_prototype",
+            statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION_PROTOTYPE.value,
             status = "Implemented",
             producer_element = e
         )
@@ -528,7 +594,7 @@ class ElementUnitTests(TestCase):
         """Test renaming an element"""
 
         # Create an element
-        e = Element.objects.create(name="Element A", full_name="Element A Full Name",description="Element A Description",element_type="component")
+        e = Element.objects.create(name="Element A", full_name="Element A Full Name",description="Element A Description",element_type="system_element")
         self.assertIsNotNone(e.id)
         self.assertEqual(e.name, "Element A")
         self.assertEqual(e.description, "Element A Description")
@@ -538,16 +604,83 @@ class ElementUnitTests(TestCase):
         self.assertEqual(e.name, "Renamed Element A")
         self.assertEqual(e.description, "Renamed Element A Description")
 
+    def test_component_type_state(self):
+        e = Element.objects.create(name="New component",  element_type="system")
+        self.assertTrue(e.id is not None)
+        self.assertTrue(e.component_type == "software")
+        self.assertTrue(e.component_state == "operational")
+        e2 = Element.objects.create(name="New component2",  element_type="system", component_type="hardware", component_state="disposition")
+        self.assertTrue(e2.id is not None)
+        self.assertTrue(e2.component_type == "hardware")
+        self.assertTrue(e2.component_state == "disposition")
+
+class ElementControlUnitTests(TestCase):
+
+    def test_assign_baseline(self):
+
+        # Create root_element - no relayed controls should exist
+        element = Element(name="sys_root_element")
+        element.save()
+        self.assertEqual(0,len(element.controls.all()))
+        # Create system
+        system = System(root_element=element)
+        system.save()
+
+        # Create a user because method expect user with correct permission
+        user = User(email='jane@example.com', username="Jane")
+        user.save()
+        # Assign owner permissions
+        element.assign_edit_permissions(user)
+
+        # Assign low baseline and some controls should exist
+        result = element.assign_baseline_controls(user, 'NIST_SP-800-53_rev4', 'low')
+        self.assertLess(110,len(element.controls.all()))
+        self.assertGreater(135,len(element.controls.all()))
+
+        # Assign moderate baseline and more controls should exist
+        element.assign_baseline_controls(user, 'NIST_SP-800-53_rev4', 'moderate')
+        self.assertLess(210,len(element.controls.all()))
+        self.assertGreater(280,len(element.controls.all()))
+
+        # Assign low baseline and controls should be removed
+        element.assign_baseline_controls(user, 'NIST_SP-800-53_rev4', 'low')
+        self.assertLess(110,len(element.controls.all()))
+        self.assertGreater(135,len(element.controls.all()))
+
+    def test_element_role(self):
+        """Test adding a role to an element"""
+
+        # Create an element and make sure it has an id
+        ele = Element.objects.create(name="Element A", full_name="Element A Full Name",description="Element A Description",element_type="system_element")
+        self.assertIsNotNone(ele.id)
+
+        # No elements have a role
+        self.assertEqual(ele.roles.values_list('role', flat=True).count(), 0)
+
+        ele_role = ElementRole.objects.create(id=1, role="add", description="testing adding a description")
+        # Adding the add role to the element
+        ele.roles.add(ele_role)
+
+        # One element has a role
+        self.assertEqual(ele.roles.values_list('role', flat=True).count(), 1)
+
+        ele2 = Element.objects.create(name="Element B", full_name="Element B Full Name",description="Element B Description",element_type="system_element")
+        # Do we have two elements?
+        self.assertEqual(Element.objects.all().count(), 2)
+
+        # Even with two elements there is still only one element with a role
+        self.assertEqual(ele.roles.values_list('role', flat=True).count(), 1)
+
 class SystemUnitTests(TestCase):
     def test_system_create(self):
-        e = Element.objects.create(name="New Element", full_name="New Element Full Name", element_type="system")
-        self.assertTrue(e.id is not None)
-        self.assertTrue(e.name == "New Element")
-        self.assertTrue(e.full_name == "New Element Full Name")
-        self.assertTrue(e.element_type == "system")
-        s = System(root_element=e)
+        sre = Element.objects.create(name="New Element", full_name="New Element Full Name", element_type="system")
+        self.assertTrue(sre.id is not None)
+        self.assertTrue(sre.name == "New Element")
+        self.assertTrue(sre.full_name == "New Element Full Name")
+        self.assertTrue(sre.element_type == "system")
+        s = System(root_element=sre)
         s.save()
-        self.assertEqual(s.root_element.name,e.name)
+        self.assertEqual(s.root_element.name,sre.name)
 
         u2 = User.objects.create(username="Jane2", email="jane@example.com")
         # Test no permissions for user
@@ -562,6 +695,42 @@ class SystemUnitTests(TestCase):
         self.assertIn('change_system', perms)
         self.assertIn('delete_system', perms)
         self.assertIn('view_system', perms)
+
+        # Create an element with control implementation statements and assign to system
+        e = Element.objects.create(name="OAuth", full_name="OAuth Service", element_type="system_element", component_state="operational")
+        self.assertTrue(e.id is not None)
+        self.assertTrue(e.name == "OAuth")
+        e.save()
+        smt_1 = Statement.objects.create(
+            sid = "au-3",
+            sid_class = "NIST_SP-800-53_rev4",
+            body = "This is the first test statement.",
+            statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value,
+            status = "Implemented",
+            producer_element = e,
+            consumer_element = s.root_element
+        )
+        smt_1.save()
+        smt_2 = Statement.objects.create(
+            sid = "au-4",
+            sid_class = "NIST_SP-800-53_rev4",
+            body = "This is the first test statement.",
+            statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value,
+            status = "Implemented",
+            producer_element = e,
+            consumer_element = s.root_element
+        )
+        smt_2.save()
+
+        # Batch update system statements status by changing system component state
+        element = e
+        control_status = "planned"
+        s.set_component_control_status(element, control_status)
+        # Test the system's component's statements status were changed
+        smt_1_updated = Statement.objects.get(pk=smt_1.id)
+        self.assertTrue(smt_1_updated.status, control_status)
+        smt_2_updated = Statement.objects.get(pk=smt_2.id)
+        self.assertTrue(smt_2_updated.status, control_status)
 
 class SystemUITests(OrganizationSiteFunctionalTests):
 
@@ -739,6 +908,7 @@ class ControlComponentTests(OrganizationSiteFunctionalTests):
 
     def click_components_tab(self):
         wait = WebDriverWait(self.browser, 15)
+
         try:
             # Using full Xpath
             comp_tab = self.browser.find_element_by_xpath("/html/body/div[1]/div/div[3]/ul/li[2]/a")
@@ -769,7 +939,6 @@ class ControlComponentTests(OrganizationSiteFunctionalTests):
         # Open the new component form open
         try:
             new_comp_btn = self.browser.find_element_by_link_text("New Component Statement")
-
         except:
             new_comp_btn = self.browser.find_element_by_id(f"producer_element-{num}-title")
         new_comp_btn.click()
@@ -785,6 +954,7 @@ class ControlComponentTests(OrganizationSiteFunctionalTests):
         self.browser.find_elements_by_name("save")[-1].click()
         self.browser.refresh()
 
+    @unittest.skip
     def test_smt_autocomplete(self):
         """
         Testing if the textbox can autocomplete and filter for existing components
@@ -803,12 +973,13 @@ class ControlComponentTests(OrganizationSiteFunctionalTests):
         # Head to the control ac-3
         self.navigateToPage(f"/systems/{systemid.id}/controls/catalogs/NIST_SP-800-53_rev4/control/ac-3")
 
-        statement_title_list = self.browser.find_elements_by_css_selector("span#producer_element-panel_num-title")
-        assert len(statement_title_list) == 0
-        # Starts at 4
-        num = 4
-        # Creating a few components
 
+        # How many components are there currently?
+        # Confirm the dropdown sees all components
+        comps_dropdown = wait_for_sleep_after(lambda: self.dropdown_option("selected_producer_element_form_id"))
+        num = len(comps_dropdown.options)
+
+        # Create components
         self.create_fill_statement_form("Component 1", "Component body", 'a', 'status_', "Planned", "Component remarks", num)
         num += 1
         wait_for_sleep_after(lambda: self.create_fill_statement_form("Component 2", "Component body", 'b', 'status_', "Planned", "Component remarks", num))
@@ -821,11 +992,17 @@ class ControlComponentTests(OrganizationSiteFunctionalTests):
         num += 1
         wait_for_sleep_after(lambda: self.create_fill_statement_form("Test name 3", "Component body", 'c', 'status_', "Planned", "Component remarks", num))
 
+        # Refresh page to refresh items in selection
+        self.navigateToPage(f"/systems/{systemid.id}/controls/catalogs/NIST_SP-800-53_rev4/control/ac-3")
+
         wait_for_sleep_after(lambda: self.click_components_tab())
 
         # Confirm the dropdown sees all components
         comps_dropdown = wait_for_sleep_after(lambda: self.dropdown_option("selected_producer_element_form_id"))
-        assert len(comps_dropdown.options) == 6
+
+
+        self.assertEquals(len(comps_dropdown.options), 7)
+
         # Click on search bar
         search_comps_txtbar = self.browser.find_elements_by_id("producer_element_search")
 
@@ -846,6 +1023,7 @@ class ControlComponentTests(OrganizationSiteFunctionalTests):
         search_comps_txtbar[-1].send_keys("2")
         self.browser.find_elements_by_id("selected_producer_element_form_id")[-1].click()# Ajax request
         var_sleep(1)
+        # print("####### len(comps_dropdown.options)", len(comps_dropdown.options))
         assert len(comps_dropdown.options) == 2
         # Use elements from database to avoid hard-coding element ids expected
         elements = Element.objects.all()
@@ -877,10 +1055,26 @@ class ControlComponentTests(OrganizationSiteFunctionalTests):
         submit_comp_statement = wait_for_sleep_after(lambda: self.browser.find_element_by_xpath("//*[@id='relatedcompModal']/div/div[1]/div[4]/button"))
         submit_comp_statement.click()
 
-        self.click_components_tab()
+class ProjectControlTests(OrganizationSiteFunctionalTests):
 
-        statement_title_list = self.browser.find_elements_by_css_selector("span#producer_element-panel_num-title")
-        assert len(statement_title_list) == 7
+    def test_project_controls_selected(self):
+
+        # login as the first user and create a new project
+        self._login()
+        self._new_project()
+
+        project = Project.objects.all().last()
+        system = project.system
+        # Assign low baseline
+        result = system.root_element.assign_baseline_controls(self.user, 'NIST_SP-800-53_rev4', 'low')
+        # Add component(s)
+
+        self.navigateToPage(f"/systems/{system.id}/controls/selected")
+        # var_sleep(10)
+
+        wait_for_sleep_after(lambda: self.assertInNodeText("Selected controls", "#tab-content"))
+
+    # def test_project_control_page(self):
 
 class ControlTestHelper(object):
 
@@ -902,7 +1096,7 @@ class ControlTestHelper(object):
             sid_class='NIST_SP-800-53_rev4',
             pid='a',
             body='This is a sample statement',
-            statement_type="control_implementation_prototype",
+            statement_type=StatementTypeEnum.CONTROL_IMPLEMENTATION.value,
             producer_element=component,
             import_record=import_record,
         )
@@ -914,56 +1108,6 @@ class ImportExportProjectTests(OrganizationSiteFunctionalTests):
     """
     Testing the whole import of project JSON which will form a new system, project, and set of components and their statements.
     """
-
-    def test_new_project_json_import(self):
-        """
-        Testing the import of a new project through JSON
-        """
-
-        # login as the first user and create a new project
-        self._login()
-        self._new_project()
-
-        # Checks the number of projects and components before the import
-        project_count_before_import = Project.objects.all().count()
-
-        self.assertEqual(project_count_before_import, 3)
-        self.assertEqual(Element.objects.all().exclude(element_type='system').count(), 0)
-
-        ## Import a new project
-        # click import project button, opening the modal
-        self.click_element("#btn-import-project")
-        ## select through the modal information needed and browse for the import needed
-        self.select_option_by_visible_text("#id_appsource_compapp", "project")
-        # The selection variable found by id
-        select = Select(self.browser.find_element_by_id("id_appsource_compapp"))
-        # Select the last option by index
-        selectLen = len(select.options)
-        select.select_by_index(selectLen - 1)
-        self.browser.find_element_by_id("id_importcheck").click()
-
-        file_input = self.browser.find_element_by_css_selector("#id_file")
-
-        file_path = os.getcwd() + "/fixtures/test_project_import_data.json"
-        # convert filepath if necessary and send keys
-        self.filepath_conversion(file_input, file_path, "sendkeys")
-        select = Select(self.browser.find_element_by_id("id_appsource_version_id"))
-        # Select the last option by index
-        selectLen = len(select.options)
-        select.select_by_index(selectLen - 1)
-        self.browser.find_element_by_id("import_component_submit").click()
-        # Should be incremented by one compared to earlier
-        project_count_after_import = Project.objects.all().count()
-
-        # Has the correct name?
-        self.assertEqual(Project.objects.all()[project_count_after_import -1 ].title, "New Test Project")
-
-        # Components and their statements?
-        self.assertEqual(Element.objects.all().exclude(element_type='system').count(), 1)
-        try:
-            self.assertEqual(Statement.objects.all().count(), 3)
-        except:
-            self.assertEqual(Statement.objects.all().count(), 6)
 
     def test_update_project_json_import(self):
         """
@@ -981,14 +1125,7 @@ class ImportExportProjectTests(OrganizationSiteFunctionalTests):
         ## Update current project
         # click import project button, opening the modal
         self.click_element("#btn-import-project")
-        ## select through the modal information needed and browse for the import needed
-        self.select_option_by_visible_text("#id_appsource_compapp", "project")
 
-        # The selection variable found by id
-        select = Select(self.browser.find_element_by_id("id_appsource_version_id"))
-        # Select the last option by index
-        selectLen = len(select.options)
-        select.select_by_index(selectLen - 1)
 
         file_input = self.browser.find_element_by_css_selector("#id_file")
 
@@ -1004,10 +1141,12 @@ class ImportExportProjectTests(OrganizationSiteFunctionalTests):
         wait_for_sleep_after(lambda: self.assertEqual(Project.objects.all()[project_num - 1].title, "New Test Project"))
         # Components and their statements?
         self.assertEqual(Element.objects.all().exclude(element_type='system').count(), 1)
+        self.assertEqual(Element.objects.all().exclude(element_type='system')[0].name, "SecGet, Endpoint Security System")
+
         try:
-            self.assertEqual(Statement.objects.all().count(), 3)
+            self.assertEqual(Statement.objects.all().count(), 1)
         except:
-            self.assertEqual(Statement.objects.all().count(), 6)
+            self.assertEqual(Statement.objects.all().count(), 4)
 
     def test_project_json_export(self):
         """
@@ -1026,7 +1165,7 @@ class ImportExportProjectTests(OrganizationSiteFunctionalTests):
         file_system = os.listdir(os.getcwd())
         # Assert there is a file
         for file_name in file_system:
-            if file_name ==project_title:
+            if file_name == project_title:
                 project_title = file_name
 
         self.assertIn(file_name, file_system)
