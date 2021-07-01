@@ -255,13 +255,15 @@ class Catalog(object):
         else:
             return None
 
-    # In [20]: [l['href'].split("/")[3] for l in c.get_control_by_id('au.2.041')['parts'][0]['links'] if 'NIST_SP_800-53_Rev_4' in l['href'] ]
-    # Out[20]: ['AU-2', 'AU-3', 'AU-3(1)', 'AU-6', 'AU-11', 'AU-12']
-    # In [1]: from controls.oscal import *
-    # In [2]: c = Catalog('CMMC_ver1')
-    # c.get_control_by_id('au.2.041')
+    def get_guidance_related_links_by_value_in_href(self, control, value):
+        """Return objects from 'rel': 'related' links with particular value found in the 'href' string"""
+        links = [ l for l in self.get_control_guidance_links(control) if l['rel']=="related" and value in l['href'] ]
+        return links
 
-
+    def get_guidance_related_links_text_by_value_in_href(self, control, value):
+        """Return 'text' from rel': 'related' links with particular value found in the 'href' string"""
+        links_text = [ l['text'] for l in self.get_control_guidance_links(control) if l['rel']=="related" and value in l['href'] ]
+        return links_text
 
     def get_control_parameter_label_by_id(self, control, param_id):
         """Return value of a parameter of a control by id of parameter"""
