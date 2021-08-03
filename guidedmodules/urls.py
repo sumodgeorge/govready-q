@@ -8,6 +8,7 @@ import guidedmodules.views
 urlpatterns = [
     url(r'^(\d+)/([\w_-]+)(/_save)()$', guidedmodules.views.save_answer),
     url(r'^(\d+)/([\w_-]+)(/question/)([\w_-]+)$', guidedmodules.views.show_question),
+    url(r'^(\d+)/([\w_-]+)(/questions/)([\w_-]+)$', guidedmodules.views.show_questions),
     url(r'^(\d+)/([\w_-]+)(/question/)([\w_-]+)/history/(\d+)/media$', guidedmodules.views.download_answer_file),
     url(r'^(\d+)/([\w_-]+)(/finished)()$', guidedmodules.views.task_finished),
     url(r'^(\d+)/([\w_-]+)/media/(.*)$', guidedmodules.views.download_module_asset),

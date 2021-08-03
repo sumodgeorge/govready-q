@@ -610,6 +610,33 @@ def save_answer(request, task, answered, context, __):
     # Return the response.
     return response
 
+
+
+
+
+
+@task_view
+def show_questions(request, task, answered, context, q):
+
+    # get context of questions in module
+    context_sorted = module_logic.get_question_context(answered, q)
+
+    # temporarily assume questions answerable
+    is_answerable = True
+
+    context = {}
+    context.update({
+        "context": context_sorted,
+        "is_answerable": is_answerable,
+    })
+
+    return render(request, "questions.html", context)
+
+
+
+
+
+
 @task_view
 def show_question(request, task, answered, context, q):
     # Let's talk about where the data is for this question. The 'q'
