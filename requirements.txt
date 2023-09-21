@@ -284,7 +284,7 @@ fs==2.4.13 \
     --hash=sha256:1d10cc8f9c55fbcf7b23775289a13f6796dca7acd5a135c379f49e87a56a7230 \
     --hash=sha256:caab4dc1561d63c92f36ee78976f6a4a01381830d8420ce34a78d4f1bb1dc95f
     # via -r requirements.in
-gevent==21.1.2 \
+gevent==23.9.0 \
     --hash=sha256:16574e4aa902ebc7bad564e25aa9740a82620fdeb61e0bbf5cbc32e84c13cb6a \
     --hash=sha256:188c3c6da67e17ffa28f960fc80f8b7e4ba0f4efdc7519822c9d3a1784ca78ea \
     --hash=sha256:1e5af63e452cc1758924528a2ba6d3e472f5338e1534b7233cd01d3429fc1082 \
