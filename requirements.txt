@@ -975,7 +975,7 @@ xxhash==2.0.2 \
     --hash=sha256:fdfac2014301da79cebcd8f9535c875f63242fe404d741cec5f70f400cc6a561 \
     --hash=sha256:ff518ec1bd7cc33218f8f3325848c56e9c73c5df30138a64a89dd65ab1e1ffb5
     # via -r requirements.in
-zipp==3.4.1 \
+zipp==3.19.1 \
     --hash=sha256:3607921face881ba3e026887d8150cca609d517579abe052ac81fc5aeffdbd76 \
     --hash=sha256:51cb66cc54621609dd593d1787f286ee42a5c0adbb4b29abea5a63edc3e03098
     # via importlib-metadata
