@@ -203,7 +203,7 @@ django==3.2.5 \
     #   djangorestframework
     #   jsonfield
     #   mozilla-django-oidc
-django-allauth==0.44.0 \
+django-allauth==0.63.6 \
     --hash=sha256:e51af457466022f52154d74c8523ac69375120fad2acce6e239635d85e610b25
     # via -r requirements.in
 django-auto-prefetch==0.0.6 \
