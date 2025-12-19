@@ -505,7 +505,7 @@ django==3.2.19 \
     #   drf-yasg
     #   jsonfield
     #   mozilla-django-oidc
-django-allauth==0.54.0 \
+django-allauth==65.13.0 \
     --hash=sha256:120e265f802b65738899c6cb627b827fde46a4d03067034c633f516c2adf3e3e
     # via -r requirements.in
 django-auto-prefetch==1.5.1 \
